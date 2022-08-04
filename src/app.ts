@@ -31,12 +31,10 @@ app.use(async ({ next }) => {
 
     app.message('', async ({ message }) => {
         await msgCollection.insertOne(message);
-        console.log(message);
     });
 
     app.message(subtype('message_changed'), async ({ event }) => {
         await changedMsgCollection.insertOne(event);
-        console.log(event);
     });
 
     console.log('⚡️ Bolt app is running!');
