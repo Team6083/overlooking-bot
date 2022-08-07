@@ -54,6 +54,7 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     const msgCollection = client.db().collection('messages');
     const changedMsgCollection = client.db().collection('changedMessages');
+    const deletedMsgCollection = client.db().collection('deletedMessages');
 
     // Start your app
     await app.start();
@@ -80,6 +81,9 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
         await changedMsgCollection.insertOne(event);
     });
 
+    app.message(subtype('message_deleted'), async ({ event }) => {
+        await deletedMsgCollection.insertOne(event);
+    });
 
     app.message('hello', async ({ message, say }) => {
         if (message.channel_type === 'im' && isGenericMessageEvent(message)) {
