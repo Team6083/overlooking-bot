@@ -6,52 +6,51 @@ import { Message } from './types/message';
 
 export type MessagesHandler = (messages: Message[]) => Promise<void>;
 
-export async function fetch_replies(web: WebClient, channelId: string, ts: string, handler: MessagesHandler) {
-
-    let nextCursor: string | null = null;
-    let lastResponseTime: Date | null = null;
-
-    await doWhilst((cb) => {
-        const rateLimit = 2000;
-        const timeoutSec = lastResponseTime ? rateLimit - (Date.now() - lastResponseTime?.getTime()) : 0;
-
-        setTimeout(() => {
-            web.conversations.replies({
-                channel: channelId,
-                ts,
-                cursor: nextCursor ?? undefined,
-            }).then((result) => {
-                lastResponseTime = new Date();
-
-                if (!result.ok) {
-                    console.error(result.error);
-                    cb(new Error(result.error ?? 'unknown error'));
-                } else if (result.messages) {
-                    nextCursor = result.response_metadata?.next_cursor ?? null;
-
-                    console.log(chalk.blue(result.response_metadata?.next_cursor));
-
-                    handler(result.messages.map((v) => {
-                        return {
-                            ...v,
-                            ts: v.ts!, // assume ts always exist
-                            channel: channelId,
-                        }
-                    })).then(() => {
-                        cb(null);
-                    });
-                } else {
-                    cb(null);
-                }
-            });
-        }, timeoutSec);
-    }, (cb) => {
-        cb(null, typeof nextCursor === 'string');
-    });
+export type FetchRepliesProps = {
+    rateLimit: number;
 }
 
-export async function fetch_history(web: WebClient, channelId: string, handler: MessagesHandler) {
+export async function fetchReplies(web: WebClient, channelId: string, ts: string, handler: MessagesHandler, props?: FetchRepliesProps) {
+    const rateLimit: number = props?.rateLimit ?? 2000;
+    let nextCursor: string | null = null;
 
+    await doWhilstWithRate((cb) => {
+        web.conversations.replies({
+            channel: channelId,
+            ts,
+            cursor: nextCursor ?? undefined,
+        }).then((result) => {
+
+            if (!result.ok) {
+                console.error(result.error);
+                cb(new Error(result.error ?? 'unknown error'));
+            } else if (result.messages) {
+                nextCursor = result.response_metadata?.next_cursor ?? null;
+
+                console.log(chalk.blue(result.response_metadata?.next_cursor));
+
+                handler(result.messages.map((v) => {
+                    return {
+                        ...v,
+                        ts: v.ts!, // assume ts always exist
+                        channel: channelId,
+                    }
+                })).then(() => cb(null)).catch(cb);
+            } else {
+                cb(null);
+            }
+        });
+    }, (cb) => {
+        cb(null, typeof nextCursor === 'string');
+    }, rateLimit);
+}
+
+export type FetchHistoryProps = {
+    rateLimit: number;
+};
+
+export async function fetchHistory(web: WebClient, channelId: string, handler: MessagesHandler, props?: Partial<FetchHistoryProps>) {
+    const rateLimit: number = props?.rateLimit ?? 5000;
     let nextCursor: string | null = null;
 
     await doWhilstWithRate((cb) => {
@@ -82,19 +81,17 @@ export async function fetch_history(web: WebClient, channelId: string, handler: 
                         1,
                         (item, callback) => {
                             console.log(`fetching replies for ${item.ts} @ ${channelId}: ${item.text ?? 'n/a'} (${item.reply_count})`)
-                            fetch_replies(web, channelId, item.ts!, handler).then(() => callback(null));
+                            fetchReplies(web, channelId, item.ts!, handler).then(() => callback(null));
                         }
                         ,
                         2000
                     )
-                ]).then(() => {
-                    cb(null);
-                });
+                ]).then(() => cb(null)).catch(cb);
             } else {
                 cb(null);
             }
         });
     }, (cb) => {
         cb(null, typeof nextCursor === 'string')
-    }, 5000);
+    }, rateLimit);
 }

@@ -5,7 +5,7 @@ import { WebClient } from '@slack/web-api';
 import * as mongoDB from 'mongodb';
 import { writeFile, mkdir } from 'fs/promises';
 import fetch, { Headers } from 'node-fetch';
-import { fetch_history } from './fetch_history';
+import { fetchHistory } from './fetch_history';
 import { getChangedMsgCollection, getDeletedMsgCollection, getMessageCollection } from './mongodb/collections';
 import { isGenericMessageEvent } from './utils/helpers';
 
@@ -118,7 +118,7 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
         await say(`<@${body.user.id}> 點了按鈕`);
     });
 
-    await fetch_history(web, 'CC2LH7T1N', async (messages) => {
+    await fetchHistory(web, 'CC2LH7T1N', async (messages) => {
         const coll = getMessageCollection(client.db());
         await Promise.all(messages.map(async (v) => {
             const r = await coll.findOne({ channel: v.channel, ts: v.ts });
