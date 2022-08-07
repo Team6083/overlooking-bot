@@ -6,7 +6,7 @@ import * as mongoDB from 'mongodb';
 import { writeFile, mkdir } from 'fs/promises';
 import fetch, { Headers } from 'node-fetch';
 import { fetch_history } from './fetch_history';
-import { getChangedMsgCollection, getMessageCollection } from './mongodb/collections';
+import { getChangedMsgCollection, getDeletedMsgCollection, getMessageCollection } from './mongodb/collections';
 import { isGenericMessageEvent } from './utils/helpers';
 
 function getLogLevel(logLevel: string | undefined): LogLevel {
@@ -56,6 +56,7 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     const msgCollection = getMessageCollection(client.db());
     const changedMsgCollection = getChangedMsgCollection(client.db());
+    const deletedMsgCollection = getDeletedMsgCollection(client.db());
 
     // Start your app
     await app.start();
@@ -82,6 +83,9 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
         await changedMsgCollection.insertOne(event);
     });
 
+    app.message(subtype('message_deleted'), async ({ event }) => {
+        await deletedMsgCollection.insertOne(event);
+    });
 
     app.message('hello', async ({ message, say }) => {
         if (message.channel_type === 'im' && isGenericMessageEvent(message)) {
