@@ -83,8 +83,33 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     app.message('hello', async ({ message, say }) => {
         if (message.channel_type === 'im' && isGenericMessageEvent(message)) {
-            await say(`早安 <@${message.user}>!`);
+            await say({
+                blocks: [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": `早安 <@${message.user}>!`
+                        },
+                        "accessory": {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "趕快點我"
+                            },
+                            "action_id": "button_click"
+                        }
+                    }
+                ],
+                text: `早安 <@${message.user}>!`,
+            });
         }
+    });
+
+    app.action('button_click', async ({ body, ack, say }) => {
+        // Acknowledge the action
+        await ack();
+        await say(`<@${body.user.id}> 點了按鈕`);
     });
 
     console.log('⚡️ Bolt app is running!');
