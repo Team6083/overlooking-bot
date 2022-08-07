@@ -7,6 +7,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import fetch, { Headers } from 'node-fetch';
 import { fetch_history } from './fetch_history';
 import { getChangedMsgCollection, getMessageCollection } from './mongodb/collections';
+import { isGenericMessageEvent } from './utils/helpers';
 
 function getLogLevel(logLevel: string | undefined): LogLevel {
     if (logLevel === LogLevel.ERROR) return LogLevel.ERROR;
@@ -79,6 +80,38 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     app.message(subtype('message_changed'), async ({ event }) => {
         await changedMsgCollection.insertOne(event);
+    });
+
+
+    app.message('hello', async ({ message, say }) => {
+        if (message.channel_type === 'im' && isGenericMessageEvent(message)) {
+            await say({
+                blocks: [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": `早安 <@${message.user}>!`
+                        },
+                        "accessory": {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": "趕快點我"
+                            },
+                            "action_id": "button_click"
+                        }
+                    }
+                ],
+                text: `早安 <@${message.user}>!`,
+            });
+        }
+    });
+
+    app.action('button_click', async ({ body, ack, say }) => {
+        // Acknowledge the action
+        await ack();
+        await say(`<@${body.user.id}> 點了按鈕`);
     });
 
     await fetch_history(web, 'CC2LH7T1N', async (messages) => {
