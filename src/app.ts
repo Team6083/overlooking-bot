@@ -5,6 +5,8 @@ import { WebClient } from '@slack/web-api';
 import * as mongoDB from 'mongodb';
 import { writeFile, mkdir } from 'fs/promises';
 import fetch, { Headers } from 'node-fetch';
+import { fetch_history } from './fetch_history';
+import { getChangedMsgCollection, getMessageCollection } from './mongodb/collections';
 
 function getLogLevel(logLevel: string | undefined): LogLevel {
     if (logLevel === LogLevel.ERROR) return LogLevel.ERROR;
@@ -51,8 +53,8 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     const client = new mongoDB.MongoClient(process.env.DB_CONN_STRING);
     await client.connect();
 
-    const msgCollection = client.db().collection('messages');
-    const changedMsgCollection = client.db().collection('changedMessages');
+    const msgCollection = getMessageCollection(client.db());
+    const changedMsgCollection = getChangedMsgCollection(client.db());
 
     // Start your app
     await app.start();
@@ -77,6 +79,21 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     app.message(subtype('message_changed'), async ({ event }) => {
         await changedMsgCollection.insertOne(event);
+    });
+
+    await fetch_history(web, 'CC2LH7T1N', async (messages) => {
+        const coll = getMessageCollection(client.db());
+        await Promise.all(messages.map(async (v) => {
+            const r = await coll.findOne({ channel: v.channel, ts: v.ts });
+            if (!r) {
+                console.log(`creating ${v.ts} @ ${v.channel}: ${(v as any).text ?? 'n/a'}`);
+                await coll.insertOne(v);
+            } else {
+                await coll.updateOne({ _id: r._id }, {
+                    $set: v,
+                });
+            }
+        }));
     });
 
     console.log('⚡️ Bolt app is running!');
