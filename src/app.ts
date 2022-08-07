@@ -5,6 +5,7 @@ import { WebClient } from '@slack/web-api';
 import * as mongoDB from 'mongodb';
 import { writeFile, mkdir } from 'fs/promises';
 import fetch, { Headers } from 'node-fetch';
+import { isGenericMessageEvent } from './utils/helpers';
 
 function getLogLevel(logLevel: string | undefined): LogLevel {
     if (logLevel === LogLevel.ERROR) return LogLevel.ERROR;
@@ -77,6 +78,13 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     app.message(subtype('message_changed'), async ({ event }) => {
         await changedMsgCollection.insertOne(event);
+    });
+
+
+    app.message('hello', async ({ message, say }) => {
+        if (message.channel_type === 'im' && isGenericMessageEvent(message)) {
+            await say(`早安 <@${message.user}>!`);
+        }
     });
 
     console.log('⚡️ Bolt app is running!');
