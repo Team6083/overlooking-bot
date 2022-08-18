@@ -1,11 +1,12 @@
 import { config } from 'dotenv';
 config();
-import { App, LogLevel, subtype } from '@slack/bolt';
+import { App, ignoreSelf, KnownEventFromType, LogLevel, subtype } from '@slack/bolt';
 import { WebClient } from '@slack/web-api';
 import * as mongoDB from 'mongodb';
 import { writeFile, mkdir } from 'fs/promises';
 import fetch, { Headers } from 'node-fetch';
 import { isGenericMessageEvent } from './utils/helpers';
+import { registerStorageSettings } from './settings';
 
 function getLogLevel(logLevel: string | undefined): LogLevel {
     if (logLevel === LogLevel.ERROR) return LogLevel.ERROR;
@@ -22,6 +23,7 @@ const app = new App({
     appToken: process.env.SLACK_APP_TOKEN,
     logLevel: getLogLevel(process.env.LOG_LEVEL),
     socketMode: true,
+    ignoreSelf: false,
 });
 
 const web = new WebClient(process.env.SLACK_BOT_TOKEN, {
@@ -59,6 +61,25 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     // Start your app
     await app.start();
 
+    // process self channel join and apply ignore self
+    app.use(async (args) => {
+
+        if (args.payload.type === 'message') {
+            const payload = args.payload as KnownEventFromType<'message'>
+            
+            // delete join message
+            if (payload.subtype === 'channel_join' && payload.user === args.context.botUserId) {
+                await args.client.chat.delete({
+                    token: process.env.SLACK_USER_TOKEN,
+                    channel: payload.channel,
+                    ts: payload.ts,
+                });
+            }
+        }
+
+        await ignoreSelf()(args);
+    });
+
     app.message('', async ({ message }) => {
         await msgCollection.insertOne(message);
 
@@ -90,18 +111,18 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
             await say({
                 blocks: [
                     {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": `早安 <@${message.user}>!`
+                        type: "section",
+                        text: {
+                            type: "mrkdwn",
+                            text: `早安 <@${message.user}>!`
                         },
-                        "accessory": {
-                            "type": "button",
-                            "text": {
-                                "type": "plain_text",
-                                "text": "趕快點我"
+                        accessory: {
+                            type: "button",
+                            text: {
+                                type: "plain_text",
+                                text: "趕快點我"
                             },
-                            "action_id": "button_click"
+                            action_id: "button_click"
                         }
                     }
                 ],
@@ -115,6 +136,8 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
         await ack();
         await say(`<@${body.user.id}> 點了按鈕`);
     });
+
+    await registerStorageSettings(app);
 
     console.log('⚡️ Bolt app is running!');
 })();
