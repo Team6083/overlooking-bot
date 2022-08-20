@@ -1,6 +1,6 @@
 import { Block, KnownBlock } from "@slack/bolt";
 import { Channel } from "@slack/web-api/dist/response/ConversationsListResponse";
-import { actions } from "./actions";
+import { actions, goto_dest } from "./actions";
 
 export function getStorageSettingBlocks(channelCount: number | undefined): (Block | KnownBlock)[] {
     return [
@@ -21,6 +21,14 @@ export function getStorageSettingBlocks(channelCount: number | undefined): (Bloc
                         text: "Show Conversations"
                     },
                     action_id: actions.showConversations
+                },
+                {
+                    type: "button",
+                    text: {
+                        type: "plain_text",
+                        text: "Add Conversations"
+                    },
+                    action_id: actions.addConversations,
                 }
             ]
         }
@@ -48,24 +56,62 @@ export function getShowConversationsBlocks(channels: Channel[], next_cursor?: st
         }))
     ];
 
-    if (next_cursor) {
-        blocks.push(
+    const buttons: Block | KnownBlock = {
+        type: "actions",
+        elements: [
             {
-                type: "actions",
-                elements: [
-                    {
-                        type: "button",
-                        text: {
-                            type: "plain_text",
-                            text: "Next Page"
-                        },
-                        value: next_cursor,
-                        action_id: actions.showConversationsNextPage
-                    }
-                ]
+                type: "button",
+                text: {
+                    type: "plain_text",
+                    text: "Back"
+                },
+                value: goto_dest.menu,
+                action_id: actions.goto
             }
-        );
+        ]
+    };
+
+    if (next_cursor) {
+        buttons.elements.push({
+            type: "button",
+            text: {
+                type: "plain_text",
+                text: "Next Page"
+            },
+            value: next_cursor,
+            action_id: actions.showConversationsNextPage
+        });
     }
 
+    blocks.push(buttons);
+
     return blocks;
+}
+
+export function getAddConversationsBlocks(): (Block | KnownBlock)[] {
+    return [
+        {
+            type: "section",
+			text: {
+				type: "mrkdwn",
+				text: "Select conversations to add..."
+			},
+            accessory: {
+				type: "multi_conversations_select",
+				placeholder: {
+					type: "plain_text",
+					text: "Select conversations",
+					emoji: true
+				},
+				filter: {
+					include: [
+						"public",
+						"private"
+					]
+				},
+				action_id: actions.addConversationsSelect,
+			}
+        },
+
+    ];
 }

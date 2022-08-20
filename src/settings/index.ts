@@ -1,7 +1,7 @@
 import { App } from "@slack/bolt";
 import { ConversationsListResponse, WebClient } from "@slack/web-api";
-import { actions } from "./actions";
-import { getShowConversationsBlocks, getStorageSettingBlocks } from "./blocks";
+import { actions, goto_dest } from "./actions";
+import { getAddConversationsBlocks, getShowConversationsBlocks, getStorageSettingBlocks } from "./blocks";
 
 const adminList = ['U1FQ5GP6D'];
 
@@ -34,7 +34,7 @@ export async function registerStorageSettings(app: App) {
             return;
         }
 
-        const convListResp = await getConversationLists(client, command.team_id); 
+        const convListResp = await getConversationLists(client, command.team_id);
 
         await client.chat.postEphemeral({
             channel: command.channel_id,
@@ -43,30 +43,102 @@ export async function registerStorageSettings(app: App) {
         });
     });
 
-    app.action(actions.showConversations, async ({ ack, action, body, client }) => {
+    app.action(actions.showConversations, async ({ ack, action, body, client, respond }) => {
         await ack();
 
-        if (!body.team || !body.channel?.id) return;
+        if (!body.team) return;
 
         if (action.type === 'button') {
             if (!adminList.includes(body.user.id)) {
-                await client.chat.postEphemeral({
-                    channel: body.channel.id,
-                    user: body.user.id,
+
+                await respond({
+                    response_type: 'ephemeral',
+                    replace_original: false,
                     text: 'You are not admin.'
                 });
-
                 return;
             }
+
+            const convListResp = await getConversationLists(client, body.team.id);
+
+            if (convListResp.channels) {
+                await respond({
+                    response_type: 'ephemeral',
+                    blocks: getShowConversationsBlocks(convListResp.channels.filter((v) => v.is_member), convListResp.response_metadata?.next_cursor),
+                });
+            }
         }
+    });
 
-        const convListResp = await getConversationLists(client, body.team.id);
+    app.action(actions.goto, async ({ ack, action, body, client, respond }) => {
+        await ack();
 
-        if (convListResp.channels) {
-            await client.chat.postEphemeral({
-                channel: body.channel.id,
-                user: body.user.id,
-                blocks: getShowConversationsBlocks(convListResp.channels.filter((v) => v.is_member), convListResp.response_metadata?.next_cursor),
+        if (!body.team) return;
+
+        if (action.type === 'button') {
+            if (!adminList.includes(body.user.id)) {
+
+                await respond({
+                    response_type: 'ephemeral',
+                    replace_original: false,
+                    text: 'You are not admin.'
+                });
+                return;
+            }
+
+            if (action.value === goto_dest.menu) {
+                const convListResp = await getConversationLists(client, body.team.id);
+
+                await respond({
+                    response_type: 'ephemeral',
+                    blocks: getStorageSettingBlocks(convListResp.channels?.filter((v) => v.is_member).length)
+                });
+            }
+        }
+    });
+
+    app.action(actions.addConversations, async ({ ack, action, body, respond }) => {
+        await ack();
+
+        if (action.type === 'button') {
+            if (!adminList.includes(body.user.id)) {
+
+                await respond({
+                    response_type: 'ephemeral',
+                    replace_original: false,
+                    text: 'You are not admin.'
+                });
+                return;
+            }
+
+            await respond({
+                response_type: 'ephemeral',
+                blocks: getAddConversationsBlocks(),
+            });
+        }
+    });
+
+    app.action(actions.addConversationsSelect, async ({ ack, action, client, body, respond }) => {
+        await ack();
+
+        if (!body.team) return;
+
+        if (action.type === 'multi_conversations_select') {
+            const selected = action.selected_conversations;
+
+            const convListResp = await getConversationLists(client, body.team.id);
+
+            await respond({
+                response_type: 'ephemeral',
+                blocks: [
+                    {
+                        type: "section",
+                        text: {
+                            type: "mrkdwn",
+                            text: `Conversations added.\n${selected.map((v) => ` <#${v}>`)}`
+                        }
+                    }
+                ]
             });
         }
     });
