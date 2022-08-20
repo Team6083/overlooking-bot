@@ -21,14 +21,6 @@ export function getStorageSettingBlocks(channelCount: number | undefined): (Bloc
                         text: "Show Conversations"
                     },
                     action_id: actions.showConversations
-                },
-                {
-                    type: "button",
-                    text: {
-                        type: "plain_text",
-                        text: "Join public channels"
-                    },
-                    action_id: actions.joinPublicChannels,
                 }
             ]
         }
@@ -84,69 +76,6 @@ export function getShowConversationsBlocks(channels: Channel[], next_cursor?: st
     }
 
     blocks.push(buttons);
-
-    return blocks;
-}
-
-export function getAddChannelsBlocks(channels: Channel[]): (Block | KnownBlock)[] {
-
-    const blocks: (Block | KnownBlock)[] = [
-        {
-            type: "input",
-            element: {
-                type: "multi_static_select",
-                placeholder: {
-                    type: "plain_text",
-                    text: "Select channels..."
-                },
-                options: channels.filter((v) => !!v.id).map((v) => {
-                    return {
-                        text: {
-                            type: "plain_text",
-                            text: v.name ?? v.id!,
-                        },
-                        value: v.id!
-                    };
-                }),
-                action_id: actions.joinPublicChannelsSelect,
-            },
-            label: {
-                type: "plain_text",
-                text: "Select channels..."
-            }
-        },
-        {
-            type: "actions",
-            elements: [
-                {
-                    type: "button",
-                    text: {
-                        type: "plain_text",
-                        text: "Submit"
-                    },
-                    action_id: actions.joinPublicChannelsSubmit
-                },
-                {
-                    type: "button",
-                    text: {
-                        type: "plain_text",
-                        text: "Add All"
-                    },
-                    action_id: actions.joinPublicChannelsAddAll
-                },
-                {
-                    type: "button",
-                    text: {
-                        type: "plain_text",
-                        text: "Back"
-                    },
-                    action_id: actions.goto,
-                    value: goto_dest.menu,
-
-                }
-            ]
-        }
-    ];
 
     return blocks;
 }

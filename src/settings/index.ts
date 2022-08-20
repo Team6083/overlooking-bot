@@ -1,13 +1,11 @@
 import { App } from "@slack/bolt";
 import { ConversationsListResponse, WebClient } from "@slack/web-api";
 import { actions, goto_dest } from "./actions";
-import { getAddChannelsBlocks, getShowConversationsBlocks, getStorageSettingBlocks } from "./blocks";
+import { getShowConversationsBlocks, getStorageSettingBlocks } from "./blocks";
 
 const adminList = ['U1FQ5GP6D'];
 
 const convListResps: { [key: string]: { resp: ConversationsListResponse, time: number } } = {};
-
-const add_channel_select: { [key: string]: string[] } = {};
 
 async function getConversationLists(client: WebClient, team_id: string): Promise<ConversationsListResponse> {
     if (!convListResps[team_id] || Date.now() - convListResps[team_id].time > 30000) {
@@ -96,60 +94,6 @@ export async function registerStorageSettings(app: App) {
                     blocks: getStorageSettingBlocks(convListResp.channels?.filter((v) => v.is_member).length)
                 });
             }
-        }
-    });
-
-    app.action(actions.joinPublicChannels, async ({ ack, action, body, client, respond }) => {
-        await ack();
-
-        if (!body.team) return;
-
-        if (action.type === 'button') {
-            const convListResp = await getConversationLists(client, body.team.id);
-
-            if (convListResp.channels) {
-                const non_member_public_channels = convListResp.channels.filter((v) => v.is_channel && !v.is_private && !v.is_member && !v.is_archived);
-
-                await respond({
-                    response_type: 'ephemeral',
-                    blocks: getAddChannelsBlocks(non_member_public_channels)
-                });
-            }
-        }
-    });
-
-    app.action(actions.joinPublicChannelsSelect, async ({ ack, action, body }) => {
-        await ack();
-
-        if (action.type === 'multi_static_select') {
-            add_channel_select[body.user.id] = action.selected_options.map((v) => v.value);
-        }
-    });
-
-    app.action(actions.joinPublicChannelsSubmit, async ({ ack, action, body, client, respond }) => {
-        await ack();
-
-        if (action.type === 'button') {
-            const channels = add_channel_select[body.user.id];
-
-            console.log(channels);
-
-            const results = await Promise.all(channels.map((v) => client.conversations.join({
-                channel: v,
-            })));
-
-            await respond({
-                response_type: 'ephemeral',
-                blocks: [
-                    {
-                        type: "section",
-                        text: {
-                            type: "mrkdwn",
-                            text: `Conversations added.\n${results.map((v) => v.channel?.id ? ` <#${v.channel?.id}>` : '')}`
-                        }
-                    }
-                ],
-            });
         }
     });
 }
