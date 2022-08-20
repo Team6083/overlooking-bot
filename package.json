@@ -16,6 +16,7 @@
     "@slack/web-api": "^6.7.2",
     "dotenv": "^16.0.0",
     "mongodb": "^4.8.1",
+    "nanoid": "^3.3.4",
     "node-fetch": "^2.6.7"
   },
   "devDependencies": {
