@@ -1,14 +1,14 @@
-import { Queue } from "bull";
 import { Message } from "../types/message";
 
 export type fetchJobTypes = 'conv.hist' | 'conv.replies';
 
-export type MessagesHandler = (messages: Message[], queue: Queue<FetchJob>) => Promise<void>;
+export type MessagesHandler = (messages: Message[]) => Promise<void>;
 
 export interface FetchConversationHistory {
     type: 'conv.hist';
     channelId: string;
     cursor?: string;
+    includeReplies?: boolean;
 }
 
 export interface FetchConversationReplies {
@@ -16,6 +16,7 @@ export interface FetchConversationReplies {
     channelId: string;
     ts: string;
     cursor?: string;
+    totalReplies: number;
 }
 
 export type FetchJob = FetchConversationHistory | FetchConversationReplies;
@@ -25,10 +26,6 @@ export function getFetchJobDesc(job: FetchJob): string {
 
     if (job.type === 'conv.replies') {
         desc += ` ${job.ts}`;
-    }
-
-    if (job.cursor) {
-        desc += ` ${job.cursor}`;
     }
 
     return desc;

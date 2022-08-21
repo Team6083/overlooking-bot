@@ -156,29 +156,10 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     const APIQueue = getAPIQueue(web);
 
-    const fetchQueue = getFetchQueue(web, async (message, queue) => {
+    const fetchQueue = getFetchQueue(APIQueue.addTask, async (message) => {
         console.log('message length', message.length);
         console.log(new Date(parseInt(message[0].ts) * 1000), (message[0] as any).text);
         console.log(new Date(parseInt(message[message.length - 1].ts) * 1000), (message[message.length - 1] as any).text);
-
-        message
-            .filter((v) => {
-                if ('reply_count' in v && typeof (v as any).reply_count === 'number' && (v as any).reply_count > 0) {
-                    return true;
-                }
-                return false;
-            })
-            .forEach((v) => {
-                queue.add({
-                    type: 'conv.replies',
-                    channelId: v.channel,
-                    ts: v.ts,
-                }).then((job) => {
-                    if ('text' in v) {
-                        job.log(`Thread parent message "${(v as any).text}" @ ${v.channel}`);
-                    }
-                });
-            });
     });
 
     createBullBoard({
@@ -196,11 +177,13 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     });
 
     await fetchQueue.pause();
+    await Promise.all(APIQueue.queues.map((q) => q.pause()));
 
     // await fetchQueue.add({
     //     type: 'conv.hist',
     //     channelId: 'C1FNKQ1KM',
-    // });
+    //     includeReplies: true,
+    // }, { priority: 10 });
 
     console.log('⚡️ Bolt app is running!');
 })();
