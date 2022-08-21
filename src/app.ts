@@ -154,16 +154,16 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     const serverAdapter = new ExpressAdapter();
     serverAdapter.setBasePath('/admin/queues');
 
-    const APIQueue = getAPIQueue(web);
+    const apiQueue = getAPIQueue(web);
 
-    const fetchQueue = getFetchQueue(APIQueue.addTask, async (message) => {
+    const fetchQueue = getFetchQueue(apiQueue, async (message) => {
         console.log('message length', message.length);
         console.log(new Date(parseInt(message[0].ts) * 1000), (message[0] as any).text);
         console.log(new Date(parseInt(message[message.length - 1].ts) * 1000), (message[message.length - 1] as any).text);
     });
 
     createBullBoard({
-        queues: [new BullAdapter(fetchQueue), ...(APIQueue.queues.map((v) => new BullAdapter(v)))],
+        queues: [new BullAdapter(fetchQueue), ...(apiQueue.queues.map((v) => new BullAdapter(v)))],
         serverAdapter: serverAdapter,
     });
 
@@ -176,14 +176,13 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
         console.log('Make sure Redis is running on port 6379 by default');
     });
 
-    await fetchQueue.pause();
-    await Promise.all(APIQueue.queues.map((q) => q.pause()));
+    // await fetchQueue.pause();
+    await Promise.all(apiQueue.queues.map((q) => q.pause()));
 
-    // await fetchQueue.add({
-    //     type: 'conv.hist',
-    //     channelId: 'C1FNKQ1KM',
-    //     includeReplies: true,
-    // }, { priority: 10 });
+    await fetchQueue.add({
+        channelId: 'C1FNKQ1KM',
+        includeReplies: true,
+    });
 
     console.log('⚡️ Bolt app is running!');
 })();
