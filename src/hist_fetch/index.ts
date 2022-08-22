@@ -1,5 +1,6 @@
 import { ConversationsHistoryResponse, ConversationsInfoResponse, ConversationsRepliesResponse } from '@slack/web-api';
 import Queue from 'bull'
+import { Collection } from 'mongodb';
 import { getAPIQueue } from '../slack/apiQueue';
 import { HistoryFetchJob, MessagesHandler } from './type';
 
@@ -58,31 +59,60 @@ export function getFetchQueue(apiQueue: ReturnType<typeof getAPIQueue>, storageH
             const reqJob = await fetchQueue.getJob(job.data.reqJobId);
 
             if (reqJob) {
+                if (!(await reqJob.isActive())) return;
+
                 if (job.data.type === 'conv.hist' || job.data.type === 'conv.replies') {
                     const result = _r as (ConversationsHistoryResponse | ConversationsRepliesResponse);
 
                     if (result.ok && result.messages) {
                         // save messages to storage
-                        await storageHandler(result.messages.map((v) => {
-                            return {
-                                ...v,
-                                ts: v.ts!, // assume ts always exist
-                                channel: reqJob.data.channelId,
-                            };
-                        }));
+                        if (result.messages.length > 0) {
+                            await storageHandler(result.messages.map((v) => {
+                                return {
+                                    ...v,
+                                    ts: v.ts!, // assume ts always exist
+                                    channel: reqJob.data.channelId,
+                                };
+                            }));
+                        }
 
                         // log result
                         if (job.data.type === 'conv.hist') {
                             await reqJob.log(
                                 `Get ${result.messages.length} messages` +
-                                (result.messages[0].ts ? `, oldest ${new Date(parseFloat(result.messages[0].ts) * 1000)}` : '') +
+                                (result.messages[0]?.ts ? `, oldest ${new Date(parseFloat(result.messages[0].ts) * 1000)}` : '') +
+                                (result.response_metadata?.next_cursor ? `, next cursor "${result.response_metadata?.next_cursor}"` : '') +
+                                '.'
+                            );
+                        } else {
+                            await reqJob.log(
+                                `Get ${result.messages.length} replies (thread_ts: "${result.messages[0]?.thread_ts ?? 'n/a'}")` +
                                 (result.response_metadata?.next_cursor ? `, next cursor "${result.response_metadata?.next_cursor}"` : '') +
                                 '.'
                             );
                         }
 
+                        // fetch replies if includeReplies is true
+                        if (job.data.type === 'conv.hist' && reqJob.data.includeReplies && result.messages.length > 0) {
+                            const threads = (result as ConversationsHistoryResponse).messages!.filter((v) => v.ts && v.reply_count && v.reply_count > 0);
+
+                            await reqJob.log(`Fetching replies for ${threads.length} messages.`);
+
+                            threads.forEach(async (t) => {
+                                addTask({
+                                    type: 'conv.replies',
+                                    data: {
+                                        channel: reqJob.data.channelId,
+                                        ts: t.ts!,
+                                    },
+                                    reqJobId: reqJob.id,
+                                    reqNamespace: 'hist_fetch'
+                                });
+                            });
+                        }
+
                         // update progress
-                        if (job.data.type === 'conv.hist' && reqJob.data.channel_created) {
+                        if (job.data.type === 'conv.hist' && reqJob.data.channel_created && result.messages.length > 0) {
                             const lastMessage = result.messages[0];
                             const lastMessageTS = lastMessage.ts ? parseFloat(lastMessage.ts) : undefined;
                             if (lastMessageTS && !isNaN(lastMessageTS)) {
@@ -136,4 +166,26 @@ export function getFetchQueue(apiQueue: ReturnType<typeof getAPIQueue>, storageH
     });
 
     return fetchQueue;
+}
+
+export async function fetch_channel(queue: Queue.Queue<HistoryFetchJob>, channelId: string, messageCollection: Collection,
+    includeReplies: boolean = true, includeFiles: boolean = true
+) {
+    const getQuery = () => messageCollection.find({ channel: channelId, thread_ts: { $exists: false } });
+    const latest: string | undefined = (await getQuery().sort('ts', 'asc').limit(1).toArray())[0]?.ts;
+    const oldest: string | undefined = (await getQuery().sort('ts', 'desc').limit(1).toArray())[0]?.ts;
+
+    await queue.add({
+        channelId,
+        latest,
+        includeReplies,
+        includeFiles
+    });
+
+    await queue.add({
+        channelId,
+        oldest,
+        includeReplies,
+        includeFiles
+    });
 }

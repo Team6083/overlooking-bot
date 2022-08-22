@@ -9,7 +9,7 @@ import { getChangedMsgCollection, getDeletedMsgCollection, getMessageCollection 
 import { isGenericMessageEvent } from './utils/helpers';
 import { registerStorageSettings } from './settings';
 import { downloadFileFromSlack } from './slack/file';
-import { getFetchQueue } from './hist_fetch';
+import { fetch_channel, getFetchQueue } from './hist_fetch';
 import { ExpressAdapter } from '@bull-board/express';
 import { createBullBoard } from '@bull-board/api';
 import { BullAdapter } from '@bull-board/api/bullAdapter';
@@ -158,8 +158,10 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
 
     const fetchQueue = getFetchQueue(apiQueue, async (message) => {
         console.log('message length', message.length);
-        console.log(new Date(parseInt(message[0].ts) * 1000), (message[0] as any).text);
-        console.log(new Date(parseInt(message[message.length - 1].ts) * 1000), (message[message.length - 1] as any).text);
+        if (message.length > 0) {
+            console.log(new Date(parseInt(message[0].ts) * 1000), (message[0] as any).text);
+            console.log(new Date(parseInt(message[message.length - 1].ts) * 1000), (message[message.length - 1] as any).text);
+        }
     });
 
     createBullBoard({
@@ -177,12 +179,14 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     });
 
     // await fetchQueue.pause();
-    await Promise.all(apiQueue.queues.map((q) => q.pause()));
+    // await Promise.all(apiQueue.queues.map((q) => q.pause()));
 
-    await fetchQueue.add({
-        channelId: 'C1FNKQ1KM',
-        includeReplies: true,
-    });
+    // await fetchQueue.add({
+    //     channelId: 'C1FNKQ1KM',
+    //     includeReplies: true,
+    // });
+
+    fetch_channel(fetchQueue, 'C1FNKQ1KM', msgCollection);
 
     console.log('⚡️ Bolt app is running!');
 })();
