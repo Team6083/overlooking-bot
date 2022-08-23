@@ -12,27 +12,8 @@ export function getFetchQueue(apiQueue: ReturnType<typeof getAPIQueue>, storageH
     fetchQueue.process((job, done) => {
         const { channelId, cursor, latest, oldest } = job.data;
 
+        console.log(job.id, job.data);
         (async () => {
-            if (typeof job.data.channel_created !== 'number') {
-                const infoJob = await addTask({
-                    type: 'conv.info',
-                    data: {
-                        channel: channelId,
-                    },
-                    reqJobId: job.id,
-                    reqNamespace: 'hist_fetch'
-                });
-
-                const result: ConversationsInfoResponse = await infoJob.finished();
-
-                if (result.ok && result.channel?.created) {
-                    await job.update({
-                        ...job.data,
-                        channel_created: result.channel.created,
-                    });
-                }
-            }
-
             if (!job.data.api_queued) {
                 await addTask({
                     type: 'conv.hist',
@@ -111,18 +92,6 @@ export function getFetchQueue(apiQueue: ReturnType<typeof getAPIQueue>, storageH
                             });
                         }
 
-                        // update progress
-                        if (job.data.type === 'conv.hist' && reqJob.data.channel_created && result.messages.length > 0) {
-                            const lastMessage = result.messages[0];
-                            const lastMessageTS = lastMessage.ts ? parseFloat(lastMessage.ts) : undefined;
-                            if (lastMessageTS && !isNaN(lastMessageTS)) {
-                                const total = Date.now() - reqJob.data.channel_created * 1000;
-                                const progress = Date.now() - lastMessageTS * 1000;
-
-                                await reqJob.progress(Math.floor((progress / total) * 100));
-                            }
-                        }
-
                         // check if has next_cursor
                         if (result.response_metadata?.next_cursor) {
                             const nextCursor = result.response_metadata?.next_cursor;
@@ -175,17 +144,21 @@ export async function fetch_channel(queue: Queue.Queue<HistoryFetchJob>, channel
     const latest: string | undefined = (await getQuery().sort('ts', 'asc').limit(1).toArray())[0]?.ts;
     const oldest: string | undefined = (await getQuery().sort('ts', 'desc').limit(1).toArray())[0]?.ts;
 
-    await queue.add({
+    const j1 = await queue.add({
         channelId,
         latest,
         includeReplies,
         includeFiles
     });
 
-    await queue.add({
+    console.log(j1.id);
+
+    const j2 = await queue.add({
         channelId,
         oldest,
         includeReplies,
         includeFiles
     });
+
+    console.log(j2.id);
 }

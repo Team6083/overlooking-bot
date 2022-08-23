@@ -10,7 +10,6 @@ interface FetchConversationHistory {
     oldest?: string;
     latest?: string;
     
-    channel_created?: number;
     api_queued?: boolean;
 }
 
