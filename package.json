@@ -20,7 +20,8 @@
     "cli-progress": "^3.11.2",
     "dotenv": "^16.0.0",
     "mongodb": "^4.8.1",
-    "node-fetch": "^2.6.7"
+    "node-fetch": "^2.6.7",
+    "tty-table": "^4.1.6"
   },
   "devDependencies": {
     "@types/args": "^5.0.0",
