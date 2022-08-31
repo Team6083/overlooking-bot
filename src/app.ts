@@ -1,29 +1,11 @@
 import { config } from 'dotenv';
 config();
-import { App, ignoreSelf, KnownEventFromType, LogLevel, subtype } from '@slack/bolt';
-import { WebClient } from '@slack/web-api';
+import { App, LogLevel } from '@slack/bolt';
 import * as mongoDB from 'mongodb';
-import { mkdir } from 'fs/promises';
-import { fetchHistory } from './fetch_history';
 import { getChangedMsgCollection, getDeletedMsgCollection, getMessageCollection } from './mongodb/collections';
-import { isGenericMessageEvent } from './utils/helpers';
 import { registerStorageSettings } from './settings';
-import { downloadFileFromSlack } from './slack/file';
-import { fetch_channel, getFetchQueue } from './hist_fetch';
-import { ExpressAdapter } from '@bull-board/express';
-import { createBullBoard } from '@bull-board/api';
-import { BullAdapter } from '@bull-board/api/bullAdapter';
-import express from 'express';
-import { getAPIQueue } from './slack/apiQueue';
+import { getLogLevel } from './utils/get_log_level';
 
-function getLogLevel(logLevel: string | undefined): LogLevel {
-    if (logLevel === LogLevel.ERROR) return LogLevel.ERROR;
-    if (logLevel === LogLevel.WARN) return LogLevel.WARN;
-    if (logLevel === LogLevel.INFO) return LogLevel.INFO;
-    if (logLevel === LogLevel.DEBUG) return LogLevel.DEBUG;
-
-    return LogLevel.WARN;
-}
 
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -33,10 +15,6 @@ const app = new App({
     socketMode: true,
     ignoreSelf: false,
     deferInitialization: true,
-});
-
-const web = new WebClient(process.env.SLACK_BOT_TOKEN, {
-    logLevel: getLogLevel(process.env.LOG_LEVEL),
 });
 
 app.use(async ({ next }) => {
@@ -150,43 +128,6 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     // });
 
     await registerStorageSettings(app);
-
-    const serverAdapter = new ExpressAdapter();
-    serverAdapter.setBasePath('/admin/queues');
-
-    const apiQueue = getAPIQueue(web);
-
-    const fetchQueue = getFetchQueue(apiQueue, async (message) => {
-        console.log('message length', message.length);
-        if (message.length > 0) {
-            console.log(new Date(parseInt(message[0].ts) * 1000), (message[0] as any).text);
-            console.log(new Date(parseInt(message[message.length - 1].ts) * 1000), (message[message.length - 1] as any).text);
-        }
-    });
-
-    createBullBoard({
-        queues: [new BullAdapter(fetchQueue), ...(apiQueue.queues.map((v) => new BullAdapter(v)))],
-        serverAdapter: serverAdapter,
-    });
-
-    const express_app = express();
-    express_app.use('/admin/queues', serverAdapter.getRouter());
-
-    express_app.listen(3000, () => {
-        console.log('Running on 3000...');
-        console.log('For the UI, open http://localhost:3000/admin/queues');
-        console.log('Make sure Redis is running on port 6379 by default');
-    });
-
-    // await fetchQueue.pause();
-    // await Promise.all(apiQueue.queues.map((q) => q.pause()));
-
-    // await fetchQueue.add({
-    //     channelId: 'C1FNKQ1KM',
-    //     includeReplies: true,
-    // });
-
-    fetch_channel(fetchQueue, 'C1FNKQ1KM', msgCollection);
 
     console.log('⚡️ Bolt app is running!');
 })();
