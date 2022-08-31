@@ -135,7 +135,7 @@ export async function fetchHistory(web: WebClient, channelId: string, handler: M
         exit(1);
     }
 
-    if (!conversationsInfoResult.channel.is_member) {
+    if (!conversationsInfoResult.channel.is_member && !conversationsInfoResult.channel.is_archived) {
         console.log(`Bot not in channel, trying to join the channel...`)
 
         const r = await web.conversations.join({ channel });
