@@ -39,7 +39,7 @@ const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
         dirPath: string,
         permalink: string
     }
-    const files: DownloadTarget[] = msgsWithFiles.slice(0, 10).map((msg) => {
+    const files: DownloadTarget[] = msgsWithFiles.map((msg) => {
         if (Array.isArray(msg.files)) {
             return msg.files.map((v) => {
                 if (v.url_private_download) {
