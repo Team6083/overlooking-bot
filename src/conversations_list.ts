@@ -10,7 +10,7 @@ import { getLogLevel } from './utils/get_log_level';
         logLevel: getLogLevel(process.env.LOG_LEVEL),
     });
 
-    const r = await web.conversations.list();
+    const r = await web.conversations.list({ types: 'public_channel,private_channel' });
 
     if (r.ok) {
         const rows: [string, string, string][] = r.channels?.map((v) => {
