@@ -4,6 +4,7 @@ import { App } from '@slack/bolt';
 import * as mongoDB from 'mongodb';
 import { getBoltLogLevel } from './utils/slack';
 import { SlackStorageModule } from './slack-storage';
+import { AppHomeModule } from './app-home';
 
 
 const app = new App({
@@ -37,6 +38,9 @@ app.use(async ({ next }) => {
 
     const slackStorageModule = new SlackStorageModule(app, msgCollection, changedMsgCollection, deletedMsgCollection, fileSavePrefix);
     await slackStorageModule.init();
+
+    const appHomeModule = new AppHomeModule(app);
+    await appHomeModule.init();
 
     console.log('⚡️ Bolt app is running!');
 })();
