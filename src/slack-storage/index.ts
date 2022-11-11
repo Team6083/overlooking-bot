@@ -32,7 +32,7 @@ export class SlackStorageModule {
             await ignoreSelf()(args);
         });
 
-        this.app.message('', async ({ message }) => {
+        this.app.message('', async ({ message, logger }) => {
             await this.msgCollection.insertOne(message);
 
             if (message.subtype === 'file_share' && message.files && this.fileSavePrefix) {
@@ -44,7 +44,7 @@ export class SlackStorageModule {
                         const filePath = `${dirPath}/${v.name}`;
                         await downloadFileFromSlack(v.url_private_download, filePath, this.app.client.token);
 
-                        console.log(`saving file ${v.permalink} to ${filePath}`);
+                        logger.debug(`Saving file ${v.permalink} to ${filePath}`);
                     }
                 }));
             }
