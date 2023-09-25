@@ -25,6 +25,7 @@ export class SlackStorageModule {
                     await args.client.chat.delete({
                         channel: payload.channel,
                         ts: payload.ts,
+                        token: process.env.SLACK_USER_TOKEN,
                     });
                 }
             }
