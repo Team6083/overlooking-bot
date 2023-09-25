@@ -6,6 +6,7 @@ import { getBoltLogLevel } from './utils/slack';
 import { SlackStorageModule } from './slack-storage';
 import { AppHomeModule } from './app-home';
 
+import 'dotenv/config'
 
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -33,10 +34,20 @@ app.use(async ({ next }) => {
     const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     if (!fileSavePrefix) throw new Error('Env SLACK_FILE_SAVE_PREFIX is required.');
 
+    const slackUserToken = process.env.SLACK_USER_TOKEN
+    if (!slackUserToken) throw new Error('Env SLACK_USER_TOKEN is required.');
+
     // Start your app
     await app.start();
 
-    const slackStorageModule = new SlackStorageModule(app, msgCollection, changedMsgCollection, deletedMsgCollection, fileSavePrefix);
+    const slackStorageModule = new SlackStorageModule(
+        app,
+        msgCollection,
+        changedMsgCollection,
+        deletedMsgCollection,
+        fileSavePrefix,
+        slackUserToken,
+    );
     await slackStorageModule.init();
 
     const appHomeModule = new AppHomeModule(app);

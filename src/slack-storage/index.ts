@@ -10,7 +10,8 @@ export class SlackStorageModule {
         private msgCollection: Collection,
         private changedMsgCollection: Collection,
         private deletedMsgCollection: Collection,
-        private fileSavePrefix: string
+        private fileSavePrefix: string,
+        private slackUserToken: string,
     ) { }
 
     async init() {
@@ -25,7 +26,7 @@ export class SlackStorageModule {
                     await args.client.chat.delete({
                         channel: payload.channel,
                         ts: payload.ts,
-                        token: process.env.SLACK_USER_TOKEN,
+                        token: this.slackUserToken,
                     });
                 }
             }
