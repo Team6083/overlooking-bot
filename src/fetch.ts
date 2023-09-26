@@ -164,7 +164,9 @@ class ConversationFetchService {
                         workQueue.unshift(works);
                     }
                 } else if (task.type === 'file') {
-                    const { id, user, name, url_private_download, mode } = task.file;
+                    const { id, user, name, url_private_download, mode, is_external } = task.file;
+
+                    if (is_external) return;
 
                     if (mode === 'tombstone') {
                         console.warn(`File: ${id} no longer available.`);

@@ -36,6 +36,7 @@ export class SlackStorageModule {
 
         this.app.message('', async ({ message, logger }) => {
             await this.msgCollection.insertOne(message);
+            logger.debug(`Got ${message.ts} @ ${message.channel}`);
 
             if (message.subtype === 'file_share' && message.files && this.fileSavePrefix) {
                 await Promise.all(message.files.map(async (v) => {
