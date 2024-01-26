@@ -7,6 +7,7 @@ import { SlackStorageModule } from './slack-storage';
 import { AppHomeModule } from './app-home';
 
 import 'dotenv/config'
+import { ReactionCheckModule } from './reaction-check';
 
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -52,6 +53,13 @@ app.use(async ({ next }) => {
 
     const appHomeModule = new AppHomeModule(app);
     await appHomeModule.init();
+
+    let ignoredUsers: string[] = [];
+    if (process.env.REACTION_USER_IGN_LIST) {
+        ignoredUsers = process.env.REACTION_USER_IGN_LIST.split(',');
+    }
+    const reactionCheckModule = new ReactionCheckModule(app, ignoredUsers);
+    await reactionCheckModule.init();
 
     console.log('⚡️ Bolt app is running!');
 })();
