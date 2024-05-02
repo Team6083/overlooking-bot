@@ -51,13 +51,13 @@ app.use(async ({ next }) => {
         fileSavePrefix,
     );
 
-    const slackUserToken = process.env.SLACK_USER_TOKEN
+    const slackUserToken = process.env.SLACK_USER_TOKEN;
     if (!slackUserToken) throw new Error('Env SLACK_USER_TOKEN is required.');
 
     const serverAdapter = new ExpressAdapter();
     serverAdapter.setBasePath('/admin/queues');
 
-    const conversationFetchService = new ConversationFetchService(app.client, redisUrl, serverAdapter);
+    const conversationFetchService = new ConversationFetchService(app.client, slackStorageRepo);
 
     // Start your app
     await app.start();

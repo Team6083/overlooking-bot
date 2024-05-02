@@ -1,356 +1,372 @@
 import { WebClient } from "@slack/web-api";
-import { FileElement, MessageElement as HistMessageElement } from "@slack/web-api/dist/response/ConversationsHistoryResponse";
-import { MessageElement as ReplMessageElement } from "@slack/web-api/dist/response/ConversationsRepliesResponse";
-
-import Bull, { Job, JobId, KeepJobsOptions, Queue, RateLimiter } from "bull";
-import { createHash } from "crypto";
-import { createBullBoard } from "@bull-board/api";
-import { BullAdapter } from "@bull-board/api/bullAdapter"
-import { ExpressAdapter } from "@bull-board/express";
-
-import { getFileArrayBufFromSlack } from "../utils/slack";
+import { FileElement } from "@slack/web-api/dist/response/ConversationsHistoryResponse";
 import { nanoid } from "nanoid";
 
-interface WorkQueueTask {
-    type: string;
-}
+import {
+    FetchHistoryTask, FetchHistoryResult,
+    FetchRepliesTask, FetchRepliesResult,
+    FetchFileTask, FetchFileResult,
+    WorkQueueTask,
+} from "./types";
+import { RateLimiter } from "../utils/rate-limiter";
+import { fetchFile, fetchHistory, fetchReplies } from "./fetch-functions";
+import { SlackStorageRepository } from "../message-repository";
+import { writeFileSync } from "fs";
 
-export interface FetchChannelTask extends WorkQueueTask {
-    type: 'chan';
-    channelId: string;
-    before?: string;
-    after?: string;
-}
-
-export interface FetchHistoryTask extends WorkQueueTask {
-    type: 'hist';
-    channelId: string;
-    cursor?: string;
-    before?: string;
-    after?: string;
-}
-
-export interface FetchHistoryResult {
-    messages: HistMessageElement[];
-    nextCursor?: string;
-}
-
-export interface FetchRepliesTask extends WorkQueueTask {
-    type: 'repl';
-    channelId: string;
-    ts: string;
-    cursor?: string;
-}
-
-export interface FetchRepliesResult {
-    messages: ReplMessageElement[];
-    nextCursor?: string;
-}
-
-export interface FetchFileTask extends WorkQueueTask {
-    type: 'file';
-    url_private_download: string;
-    meta: FileElement;
-}
-
-export interface FetchFileResult {
-    buf?: ArrayBuffer;
-}
-
-export class SlackAPIError extends Error {
-    constructor(
-        public code: string,
-    ) {
-        super(`Slack API error: ${code}`);
-    }
-}
-
-const slackTier3: RateLimiter = {
+const slackTier3 = {
     max: 50,
     duration: 60 * 1000,
-    bounceBack: true,
 }
 
-const keepJobsOpt: KeepJobsOptions = {
-    // in seconds
-    age: 5 * 24 * 60 * 60,
+export type OnCompleteEventHandlers<T, R> = (task: T, result: R) => void;
+
+type EventSubjects = 'hist' | 'repl' | 'file';
+type EventNames = 'enqueue' | 'completed';
+
+type FetchChannelOptions = {
+    before?: string;
+    after?: string;
+    downloadFiles?: boolean;
 }
 
 export class ConversationFetchService {
     constructor(
         private webAPI: WebClient,
-        redisUrl: string,
-        serverAdapter?: ExpressAdapter,
+        private repo: SlackStorageRepository,
     ) {
-        this.channelQueue = new Bull('fetch-channel-queue', redisUrl);
 
-        this.histQueue = new Bull('fetch-history-queue', redisUrl, {
-            limiter: slackTier3,
+        this.on('hist', 'completed', this.saveFetchHistoryResult.bind(this));
+        this.on('repl', 'completed', this.saveFetchRepliesResult.bind(this));
+        this.on('file', 'completed', this.saveFetchFileResult.bind(this));
+
+        this.on('hist', 'enqueue', this.onEnqueueTask.bind(this));
+        this.on('repl', 'enqueue', this.onEnqueueTask.bind(this));
+        this.on('file', 'enqueue', this.onEnqueueTask.bind(this));
+    }
+
+    private histQueue = new RateLimiter(slackTier3.max, slackTier3.duration);
+    private replQueue = new RateLimiter(slackTier3.max, slackTier3.duration);
+    private fileQueue = new RateLimiter(10, 30);
+
+    fetchChannel(channelId: string, opts?: FetchChannelOptions): Promise<void> {
+        const { before, after, downloadFiles } = opts ?? {};
+
+        return new Promise((resolve, reject) => {
+            const rootEventId = nanoid(5);
+
+            const getRelatedTasks = () => {
+                return this.tasks.filter((v) => v.corelationId === rootEventId);
+            };
+
+            const completedTaskIds: {
+                id: string;
+                completedAt: Date;
+            }[] = [];
+
+            const updateStatus = (task: WorkQueueTask) => {
+                console.log(`[${channelId}] Done: ${ConversationFetchService.taskToString(task)}`);
+
+                completedTaskIds.push({
+                    id: task.id,
+                    completedAt: new Date(),
+                });
+
+                const relatedTasks = getRelatedTasks();
+                const remainingTasks = relatedTasks.filter((v) => completedTaskIds.findIndex((c) => c.id === v.id) === -1);
+                const completedTasks = relatedTasks.filter((v) => completedTaskIds.findIndex((c) => c.id === v.id) !== -1);
+
+                writeFileSync(`./job_updates/${channelId}_${rootEventId}.json`, JSON.stringify({
+                    completed: completedTasks,
+                    remaining: remainingTasks,
+                    completedTaskIds,
+                }));
+
+                const remainingTaskTypes = remainingTasks.reduce((acc: { [key: string]: number }, task) => {
+                    const type = task.type;
+                    if (!acc[type]) {
+                        acc[type] = 0;
+                    }
+                    acc[type] += 1;
+                    return acc;
+                }, {});
+
+                console.log(`[${channelId}] Remaining tasks: ${remainingTaskTypes['hist'] ?? 0} / ${remainingTaskTypes['repl'] ?? 0} / ${remainingTaskTypes['file'] ?? 0}`);
+
+                if (remainingTasks.length === 0) {
+                    console.log("Done!");
+
+                    this.off('hist', 'completed', handleHistDone);
+                    this.off('repl', 'completed', handleReplDone);
+                    this.off('file', 'completed', handleFileDone);
+
+                    resolve();
+                }
+            }
+
+            const handleHistDone = async (task: FetchHistoryTask, result: FetchHistoryResult) => {
+                if (task.corelationId !== rootEventId) return;
+
+                const eventIds = {
+                    corelationId: rootEventId,
+                    causationId: task.id
+                };
+
+                if (result.nextCursor) {
+                    this.enqueueHist({
+                        id: nanoid(5),
+                        ...eventIds,
+                        type: 'hist',
+                        channelId,
+                        cursor: result.nextCursor,
+                        before,
+                        after,
+                    });
+                }
+
+                result.messages.forEach((v) => {
+                    if (v.reply_count && v.reply_count > 0 && v.ts) {
+                        this.enqueueRepl({
+                            id: nanoid(5),
+                            ...eventIds,
+                            type: 'repl',
+                            channelId,
+                            ts: v.ts,
+                        });
+                    }
+
+                    if (v.files && downloadFiles) {
+                        v.files.forEach(async (f) => {
+                            if (f.url_private_download && (typeof f.id !== 'string' || !this.repo.hasFileSync(f as any))) {
+                                this.enqueueFile({
+                                    id: nanoid(5),
+                                    ...eventIds,
+                                    type: 'file',
+                                    url_private_download: f.url_private_download,
+                                    meta: f,
+                                });
+                            }
+                        });
+                    }
+                });
+
+                updateStatus(task);
+            }
+
+            const handleReplDone = async (task: FetchRepliesTask, result: FetchRepliesResult) => {
+                if (task.corelationId !== rootEventId) return;
+
+                const eventIds = {
+                    corelationId: rootEventId,
+                    causationId: task.id
+                };
+
+                if (result.nextCursor) {
+                    this.enqueueRepl({
+                        id: nanoid(5),
+                        ...eventIds,
+                        type: 'repl',
+                        channelId,
+                        ts: task.ts,
+                        cursor: result.nextCursor,
+                    });
+                }
+
+
+                if (downloadFiles) {
+                    result.messages.forEach((v) => {
+                        if (v.files) {
+                            v.files.forEach(async (f) => {
+                                if (f.url_private_download && (typeof f.id !== 'string' || !this.repo.hasFileSync(f as any))) {
+                                    this.enqueueFile({
+                                        id: nanoid(5),
+                                        ...eventIds,
+                                        type: 'file',
+                                        url_private_download: f.url_private_download,
+                                        meta: f,
+                                    });
+                                }
+                            });
+                        }
+                    });
+                }
+
+                updateStatus(task);
+            }
+
+            const handleFileDone = (task: FetchFileTask, result: FetchFileResult) => {
+                if (task.corelationId !== rootEventId) return;
+
+                updateStatus(task);
+            }
+
+            this.on('hist', 'completed', handleHistDone);
+            this.on('repl', 'completed', handleReplDone);
+            this.on('file', 'completed', handleFileDone);
+
+            this.enqueueHist({ id: rootEventId, corelationId: rootEventId, causationId: rootEventId, type: 'hist', channelId, before, after });
         });
+    }
 
-        this.replQueue = new Bull('fetch-reply-queue', redisUrl, {
-            limiter: slackTier3,
+    fetchHistory(channelId: string, cursor?: string, before?: string, after?: string) {
+        const eventId = nanoid(5);
+        return this.enqueueHist({ id: eventId, type: 'hist', channelId, cursor, before, after });
+    }
+
+    fetchReplies(channelId: string, ts: string, cursor?: string) {
+        const eventId = nanoid(5);
+        return this.enqueueRepl({ id: eventId, type: 'repl', channelId, ts, cursor });
+    }
+
+    fetchFile(url: string, meta: FileElement) {
+        const eventId = nanoid(5);
+        return this.enqueueFile({ id: eventId, type: 'file', url_private_download: url, meta });
+    }
+
+    private tasks: WorkQueueTask[] = [];
+
+    // enqueue tasks
+
+    private enqueueHist(task: FetchHistoryTask) {
+        this.emit('hist', 'enqueue', task);
+        return this.histQueue.enqueueTask(async () => {
+            const result = await fetchHistory(this.webAPI, task);
+            this.emit('hist', 'completed', task, result);
+            return result;
         });
+    }
 
-        this.fileQueue = new Bull('file-queue', redisUrl);
+    private enqueueRepl(task: FetchRepliesTask) {
+        this.emit('repl', 'enqueue', task);
+        return this.replQueue.enqueueTask(async () => {
+            const result = await fetchReplies(this.webAPI, task);
+            this.emit('repl', 'completed', task, result);
+            return result;
+        });
+    }
 
-        this.channelQueue.process(3, this.processFetchChannel.bind(this));
-        this.histQueue.process('*', (job) => this.processFetchHistory(job.data));
-        this.replQueue.process('*', (job) => this.processFetchReplies(job.data));
-        this.fileQueue.process('*', 3, (job) => this.processFetchFile(job.data));
+    private enqueueFile(task: FetchFileTask) {
+        this.emit('file', 'enqueue', task);
+        return this.fileQueue.enqueueTask(async () => {
+            const result = await fetchFile(this.webAPI, task);
+            this.emit('file', 'completed', task, result);
+            return result;
+        });
+    }
 
-        if (serverAdapter) {
-            createBullBoard({
-                queues: [
-                    new BullAdapter(this.channelQueue),
-                    new BullAdapter(this.histQueue),
-                    new BullAdapter(this.replQueue),
-                    new BullAdapter(this.fileQueue)
-                ],
-                serverAdapter,
+    private static taskToString(task: WorkQueueTask) {
+        const getTaskStr = (task: WorkQueueTask) => {
+            if (task.type === 'hist') {
+                const histTask = task as FetchHistoryTask;
+                return `${histTask.type}@${histTask.channelId}_${histTask.cursor ?? 'null'}`;
+            }
+
+            if (task.type === 'repl') {
+                const replTask = task as FetchRepliesTask;
+                return `${replTask.type}@${replTask.channelId}_${replTask.ts}_${replTask.cursor ?? 'null'}`;
+            }
+
+            if (task.type === 'file') {
+                const fileTask = task as FetchFileTask;
+                return `${fileTask.type}@${fileTask.url_private_download}`;
+            }
+
+            return 'unknown';
+        }
+
+        return `\`${getTaskStr(task)}\` #\`${task.causationId}\`-\`${task.id}\``;
+    }
+
+    private onEnqueueTask(task: WorkQueueTask) {
+        this.tasks.push(task);
+
+        // console.log(`Enqueued: ${ConversationFetchService.taskToString(task)}`);
+    }
+
+    // save result handlers
+
+    private async saveFetchHistoryResult(task: FetchHistoryTask, result: FetchHistoryResult) {
+        await this.repo.saveMessages(result.messages.map((v) => {
+            const ts = v.ts;
+            if (!ts) {
+                console.warn(`Hist: Message without ts@${task.channelId}: ${v.text}`);
+            }
+
+            return {
+                ...v,
+                ts: ts ?? '0',
+                channel: task.channelId,
+            };
+        }));
+    }
+
+    private async saveFetchRepliesResult(task: FetchRepliesTask, result: FetchRepliesResult) {
+        await this.repo.saveMessages(result.messages.map((v) => {
+            const ts = v.ts;
+            if (!ts) {
+                console.warn(`Replies: Message without ts@${task.channelId}: ${v.text}`);
+            }
+
+            return {
+                ...v,
+                ts: ts ?? '0',
+                channel: task.channelId,
+            };
+        }));
+    }
+
+    private async saveFetchFileResult(task: FetchFileTask, result: FetchFileResult) {
+        const meta = task.meta;
+        const fileId = meta.id;
+
+        if (!fileId) {
+            console.error('File task without meta.id');
+            return;
+        }
+
+        if (result.buf) {
+            await this.repo.saveFile(result.buf, {
+                ...meta, id: fileId
             });
         }
     }
 
-    private channelQueue: Queue<FetchChannelTask>;
-    private histQueue: Queue<FetchHistoryTask>;
-    private replQueue: Queue<FetchRepliesTask>;
-    private fileQueue: Queue<FetchFileTask>;
+    // TODO: better event handling
+    // event handlers
+    private eventListeners: { [event: string]: Function[] } = {};
 
-    fetchChannel(channelId: string, before?: string, after?: string) {
-        return this.channelQueue.add(
-            { type: 'chan', channelId, before, after },
-            { removeOnComplete: keepJobsOpt, jobId: `chan_${channelId}_${nanoid(5)}` }
-        );
+    private static getEventKey(subject: EventSubjects, event: EventNames) {
+        return `${subject}:${event}`;
     }
 
-    fetchHistory(channelId: string, cursor?: string, before?: string, after?: string): Promise<FetchHistoryResult> {
-        const jobId = cursor ? `hist_${channelId}_${cursor}` : undefined;
+    on(subject: EventSubjects, event: EventNames, listener: Function) {
+        const key = ConversationFetchService.getEventKey(subject, event);
 
-        return this.histQueue.add(
-            { type: 'hist', channelId, cursor, before, after },
-            { removeOnComplete: keepJobsOpt, jobId }
-        ).then(ConversationFetchService.convertToResultPromise<FetchHistoryTask, FetchHistoryResult>);
+        if (!this.eventListeners[key]) {
+            this.eventListeners[key] = [];
+        }
+        this.eventListeners[key].push(listener);
     }
 
-    fetchReplies(channelId: string, ts: string, cursor?: string): Promise<FetchRepliesResult> {
-        const jobId = cursor ? `repl_${channelId}_${ts}_${cursor}` : undefined;
+    off(subject: EventSubjects, event: EventNames, listener: Function) {
+        const key = ConversationFetchService.getEventKey(subject, event);
 
-        return this.replQueue.add(
-            { type: 'repl', channelId, ts, cursor },
-            { removeOnComplete: keepJobsOpt, jobId }
-        ).then(ConversationFetchService.convertToResultPromise<FetchRepliesTask, FetchRepliesResult>);
-    }
-
-    fetchFile(url: string, meta: FileElement): Promise<FetchFileResult> {
-        const urlHash = createHash('sha256').update(url).digest('hex');
-
-        return this.fileQueue.add(
-            { type: 'file', url_private_download: url, meta },
-            { removeOnComplete: keepJobsOpt, jobId: urlHash }
-        ).then(ConversationFetchService.convertToResultPromise<FetchFileTask, FetchFileResult>);
-    }
-
-    onFetchHistoryComplete(handler: (job: Job<FetchHistoryTask>, result: FetchHistoryResult) => void) {
-        this.histQueue.on('completed', handler);
-    }
-
-    onFetchRepliesComplete(handler: (job: Job<FetchRepliesTask>, result: FetchRepliesResult) => void) {
-        this.replQueue.on('completed', handler);
-    }
-
-    onFetchFileComplete(handler: (job: Job<FetchFileTask>, result: FetchFileResult) => void) {
-        this.fileQueue.on('completed', handler);
-    }
-
-    private static async convertToResultPromise<T, R>(job: Job<T>): Promise<R> {
-        return new Promise(async (resolve) => {
-            const listener = (_job: Job<T>, result: R) => {
-                if (job.id === _job.id) {
-                    job.queue.off('completed', listener);
-
-                    resolve(result);
-                }
+        const listeners = this.eventListeners[key];
+        if (listeners) {
+            const index = listeners.indexOf(listener);
+            if (index >= 0) {
+                listeners.splice(index, 1);
             }
-
-            job.queue.on('completed', listener);
-        });
-    }
-
-    private processFetchChannel(fetchChannelJob: Job<FetchChannelTask>): Promise<void> {
-        return new Promise((resolve) => {
-            const task = fetchChannelJob.data;
-
-            const { channelId, before, after } = task;
-            const jobName = typeof fetchChannelJob.id === 'string' ? fetchChannelJob.id : `chan_${channelId}_${nanoid(5)}`;
-
-            const jobs: Set<JobId> = new Set();
-            const finishedJobIds: Set<JobId> = new Set();
-
-            const updateProgress = () => {
-                const progress = Math.round((finishedJobIds.size / jobs.size) * 100);
-
-                fetchChannelJob.progress(progress);
-
-                if (finishedJobIds.size === jobs.size && finishedJobIds.size > 0) {
-                    fetchChannelJob.log('All jobs done');
-                    resolve();
-                } else {
-                    // jobs.forEach((v) => {
-                    //     if (!finishedJobIds.has(v)) {
-                    //         console.log(`Job ${v} not finished`);
-                    //     }
-                    // });
-
-                    setTimeout(updateProgress, 1000);
-                }
-            }
-            updateProgress();
-
-            const enqueueHist = async (cursor?: string) => {
-                const jobId = cursor ? `hist_${channelId}_${cursor}` : undefined;
-
-                const job = await this.histQueue.add(jobName,
-                    { type: 'hist', channelId, cursor, before, after },
-                    { removeOnComplete: keepJobsOpt, jobId }
-                )
-
-                jobs.add(job.id);
-            };
-
-            const enqueueRepl = async (ts: string, cursor?: string) => {
-                const jobId = cursor ? `repl_${channelId}_${ts}_${cursor}` : undefined;
-
-                const job = await this.replQueue.add(jobName,
-                    { type: 'repl', channelId, ts, cursor },
-                    { removeOnComplete: keepJobsOpt, jobId }
-                )
-
-                jobs.add(job.id);
-            };
-
-            const enqueueFile = async (url: string, meta: FileElement) => {
-                const urlHash = createHash('sha256').update(url).digest('hex');
-
-                const job = await this.fileQueue.add(jobName,
-                    { type: 'file', url_private_download: url, meta },
-                    { removeOnComplete: keepJobsOpt, jobId: urlHash }
-                )
-
-                jobs.add(job.id);
-            };
-
-            const handleHistDone = async (job: Job<FetchHistoryTask>, result: FetchHistoryResult) => {
-                if (job.name != jobName) return;
-
-                if (result.nextCursor) {
-                    await enqueueHist(result.nextCursor);
-                }
-
-                await Promise.all(result.messages.map(async (v) => {
-                    if (v.reply_count && v.reply_count > 0 && v.ts) {
-                        await enqueueRepl(v.ts);
-                    }
-
-                    if (v.files) {
-                        await Promise.all(v.files.map(async (f) => {
-                            if (f.url_private_download)
-                                await enqueueFile(f.url_private_download, f);
-                        }));
-                    }
-                }));
-
-                finishedJobIds.add(job.id);
-                fetchChannelJob.log(`Hist done: ${job.id}`);
-            }
-
-            const handleReplDone = async (job: Job<FetchRepliesTask>, result: FetchRepliesResult) => {
-                if (job.name != jobName) return;
-
-                if (result.nextCursor) {
-                    await enqueueRepl(job.data.ts, result.nextCursor);
-                }
-
-                await Promise.all(result.messages.map(async (v) => {
-                    if (v.files) {
-                        await Promise.all(v.files.map(async (f) => {
-                            if (f.url_private_download) {
-                                await enqueueFile(f.url_private_download, f);
-                            }
-                        }));
-                    }
-                }));
-
-                finishedJobIds.add(job.id);
-                fetchChannelJob.log(`Replies done: ${job.id}`);
-            }
-
-            const handleFileDone = (job: Job<FetchFileTask>, result: FetchFileResult) => {
-                if (job.name != jobName) return;
-
-                finishedJobIds.add(job.id);
-                fetchChannelJob.log(`File done: ${job.id}`);
-            }
-
-            this.histQueue.on('completed', handleHistDone);
-            this.replQueue.on('completed', handleReplDone);
-            this.fileQueue.on('completed', handleFileDone);
-
-            // Start the process
-            enqueueHist();
-        });
-    }
-
-    private async processFetchHistory(task: FetchHistoryTask): Promise<FetchHistoryResult> {
-        const { channelId, cursor, before, after } = task;
-
-        const result = await this.webAPI.conversations.history({
-            channel: channelId,
-            include_all_metadata: true,
-            limit: 999,
-            cursor,
-            latest: before,
-            oldest: after,
-        });
-
-        if (result.ok) {
-            const nextCursor = result.response_metadata?.next_cursor;
-
-            return {
-                messages: result.messages ?? [],
-                nextCursor,
-            }
-        } else {
-            throw new SlackAPIError(result.error ?? "unknown");
         }
     }
 
-    private async processFetchReplies(task: FetchRepliesTask): Promise<FetchRepliesResult> {
-        const { channelId, ts, cursor } = task;
+    emit(subject: EventSubjects, event: EventNames, ...args: any[]) {
+        const key = ConversationFetchService.getEventKey(subject, event);
 
-        const result = await this.webAPI.conversations.replies({
-            channel: channelId,
-            ts,
-            cursor,
-        });
-
-        if (result.ok) {
-            const nextCursor = result.response_metadata?.next_cursor;
-
-            return {
-                messages: result.messages ?? [],
-                nextCursor,
+        const listeners = this.eventListeners[key];
+        if (listeners) {
+            for (const listener of listeners) {
+                listener(...args);
             }
-        } else {
-            throw new SlackAPIError(result.error ?? "unknown");
         }
-    }
-
-    private async processFetchFile(task: FetchFileTask): Promise<FetchFileResult> {
-        const { url_private_download: url } = task;
-
-        return {
-            buf: await getFileArrayBufFromSlack(url, this.webAPI.token),
-        };
     }
 }

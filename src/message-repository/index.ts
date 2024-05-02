@@ -25,6 +25,8 @@ export interface SlackStorageRepository {
 
     saveMessages(messages: Message[]): Promise<void>;
 
+    hasFileSync(meta: FileMetadata): boolean;
+
     saveFile(data: ArrayBuffer, meta: FileMetadata): Promise<void>;
 
     onMessage(data: Message): Promise<void>;

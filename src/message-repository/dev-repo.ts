@@ -5,7 +5,9 @@ import { nanoid } from "nanoid";
 import { FileMetadata, FindMessagesParams, Message, SlackStorageRepository } from "./index";
 
 export class DevSlackStorageRepository implements SlackStorageRepository {
-
+    hasFileSync(meta: FileMetadata): boolean {
+        throw new Error("Method not implemented.");
+    }
 
     findMessage(channel: string, ts: string): Promise<Message | undefined> {
         throw new Error("Method not implemented.");

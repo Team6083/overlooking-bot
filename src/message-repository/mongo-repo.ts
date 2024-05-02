@@ -1,5 +1,5 @@
 import { MessageChangedEvent, MessageDeletedEvent } from "@slack/bolt";
-import { writeFileSync } from "fs";
+import { writeFileSync, accessSync, constants } from "fs";
 import { Collection } from "mongodb";
 import { mkdir } from "fs/promises";
 
@@ -63,14 +63,30 @@ export class MongoDBSlackStorageRepository implements SlackStorageRepository {
         }));
     }
 
-    async saveFile(data: ArrayBuffer, meta: FileMetadata): Promise<void> {
+    private static getFilePath(prefix: string, meta: FileMetadata): string {
         const fileId = meta.id;
         const fileName = meta.name ?? 'unknown';
 
-        const dirPath = `${this.fileSavePrefix}`;
+        return `${prefix}/${fileId}_${fileName}`;
+    }
+
+    hasFileSync(meta: FileMetadata): boolean {
+        const path = MongoDBSlackStorageRepository.getFilePath(this.fileSavePrefix, meta);
+        try {
+            accessSync(path, constants.F_OK);
+
+            return true;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    async saveFile(data: ArrayBuffer, meta: FileMetadata): Promise<void> {
+        const fileId = meta.id;
+        const dirPath = this.fileSavePrefix;
         await mkdir(dirPath, { recursive: true });
 
-        const filePath = `${dirPath}/${fileId}_${fileName}`;
+        const filePath = MongoDBSlackStorageRepository.getFilePath(dirPath, meta);
         writeFileSync(filePath, Buffer.from(data));
 
         if (meta) {
