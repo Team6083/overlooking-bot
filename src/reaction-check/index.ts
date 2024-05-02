@@ -1,4 +1,4 @@
-import { App, ignoreSelf, KnownEventFromType, subtype } from "@slack/bolt";
+import { App } from "@slack/bolt";
 import { Member } from "@slack/web-api/dist/response/UsersListResponse";
 
 
