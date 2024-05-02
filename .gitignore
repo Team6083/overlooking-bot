@@ -1,4 +1,6 @@
+node_modules
+dist
+job_updates
+
+files
 .env
-dist/*
-node_modules/*
-files/*
