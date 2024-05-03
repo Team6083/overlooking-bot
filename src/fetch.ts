@@ -76,17 +76,39 @@ import { readFileSync, readdirSync, writeFileSync } from "fs";
 
     writeFileSync('./channels.json', JSON.stringify(chansResp, null, 2));
 
+    const channels = chansResp.channels.map((v) => {
+        const juIdx = jobUpdates.findIndex((j) => j.id === v.id);
+        if (juIdx !== -1) {
+            if (jobUpdates[juIdx].finished) {
+                return { id: v.id, name: v.name, state: 'finished' };
+            } else {
+                return { id: v.id, name: v.name, state: 'not_finished' };
+            }
+        }
+
+        return { id: v.id, name: v.name, state: 'not_started' };
+    });
+
+    channels.sort((a, b) => {
+        if (a.state === 'not_started' && b.state !== 'not_started') {
+            return -1;
+        } else if (a.state !== 'not_started' && b.state === 'not_started') {
+            return 1;
+        }
+
+        return 0;
+    });
+
     const answers = await inquirer.prompt([{
         type: 'checkbox',
         name: 'channels',
         message: 'Select channels to fetch',
-        choices: chansResp.channels
+        choices: channels
             .map((chan) => {
                 let str = chan.name ?? chan.id;
 
-                const juIdx = jobUpdates.findIndex((j) => j.id === chan.id);
-                if (juIdx !== -1) {
-                    if (jobUpdates[juIdx].finished) {
+                if (chan.state !== 'not_started') {
+                    if (chan.state === 'finished') {
                         str += ' (Finished)';
                     } else {
                         str += ' (Not Finished)';
