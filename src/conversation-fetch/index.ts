@@ -33,8 +33,10 @@ export class ConversationFetchService {
     constructor(
         private webAPI: WebClient,
         private repo: SlackStorageRepository,
+        private log: (...args: any[]) => void = console.log,
+        private warn: (...args: any[]) => void = console.warn,
+        private error: (...args: any[]) => void = console.error,
     ) {
-
         this.on('hist', 'completed', this.saveFetchHistoryResult.bind(this));
         this.on('repl', 'completed', this.saveFetchRepliesResult.bind(this));
         this.on('file', 'completed', this.saveFetchFileResult.bind(this));
@@ -47,6 +49,23 @@ export class ConversationFetchService {
     private histQueue = new RateLimiter(slackTier3.max, slackTier3.duration);
     private replQueue = new RateLimiter(slackTier3.max, slackTier3.duration);
     private fileQueue = new RateLimiter(10, 30);
+
+    getQueueStats() {
+        return {
+            hist: {
+                active: this.histQueue.getRunningCount(),
+                waiting: this.histQueue.getQueueLength(),
+            },
+            repl: {
+                active: this.replQueue.getRunningCount(),
+                waiting: this.replQueue.getQueueLength(),
+            },
+            file: {
+                active: this.fileQueue.getRunningCount(),
+                waiting: this.fileQueue.getQueueLength(),
+            },
+        }
+    }
 
     fetchChannel(channelId: string, opts?: FetchChannelOptions): Promise<void> {
         const { before, after, downloadFiles } = opts ?? {};
@@ -64,7 +83,7 @@ export class ConversationFetchService {
             }[] = [];
 
             const updateStatus = (task: WorkQueueTask) => {
-                console.log(`[${channelId}] Done: ${ConversationFetchService.taskToString(task)}`);
+                this.log(`[${channelId}] Done: ${ConversationFetchService.taskToString(task)}`);
 
                 completedTaskIds.push({
                     id: task.id,
@@ -81,19 +100,13 @@ export class ConversationFetchService {
                     completedTaskIds,
                 }));
 
-                const remainingTaskTypes = remainingTasks.reduce((acc: { [key: string]: number }, task) => {
-                    const type = task.type;
-                    if (!acc[type]) {
-                        acc[type] = 0;
-                    }
-                    acc[type] += 1;
-                    return acc;
-                }, {});
-
-                console.log(`[${channelId}] Remaining tasks: ${remainingTaskTypes['hist'] ?? 0} / ${remainingTaskTypes['repl'] ?? 0} / ${remainingTaskTypes['file'] ?? 0}`);
+                {
+                    const { hist, repl, file } = this.getQueueStats();
+                    console.log(`Queue stats: ${hist.waiting} / ${repl.waiting} / ${file.waiting}`);
+                }
 
                 if (remainingTasks.length === 0) {
-                    console.log("Done!");
+                    this.log("Done!");
 
                     this.off('hist', 'completed', handleHistDone);
                     this.off('repl', 'completed', handleReplDone);
@@ -120,7 +133,7 @@ export class ConversationFetchService {
                         cursor: result.nextCursor,
                         before,
                         after,
-                    });
+                    }).catch(reject);;
                 }
 
                 result.messages.forEach((v) => {
@@ -131,7 +144,7 @@ export class ConversationFetchService {
                             type: 'repl',
                             channelId,
                             ts: v.ts,
-                        });
+                        }).catch(reject);;
                     }
 
                     if (v.files && downloadFiles) {
@@ -143,11 +156,14 @@ export class ConversationFetchService {
                                     type: 'file',
                                     url_private_download: f.url_private_download,
                                     meta: f,
-                                });
+                                }).catch(reject);;
                             }
                         });
                     }
                 });
+
+                const sortedTS = result.messages.map((v) => parseFloat(v.ts ?? '0')).sort();
+                console.log(`[${channelId}] Hist: ${new Date(sortedTS[0] * 1000).toLocaleString()} - ${new Date(sortedTS[sortedTS.length - 1] * 1000).toLocaleString()}`);
 
                 updateStatus(task);
             }
@@ -168,7 +184,7 @@ export class ConversationFetchService {
                         channelId,
                         ts: task.ts,
                         cursor: result.nextCursor,
-                    });
+                    }).catch(reject);;
                 }
 
 
@@ -183,12 +199,17 @@ export class ConversationFetchService {
                                         type: 'file',
                                         url_private_download: f.url_private_download,
                                         meta: f,
-                                    });
+                                    }).catch(reject);;
                                 }
                             });
                         }
                     });
                 }
+
+                const sortedTS = result.messages.map((v) => parseFloat(v.ts ?? '0')).sort();
+                console.log(`[${channelId}] Repl: ` +
+                    `${new Date(parseFloat(task.ts ?? '0') * 1000).toLocaleString()} ` +
+                    `${new Date(sortedTS[0] * 1000).toLocaleString()} - ${new Date(sortedTS[sortedTS.length - 1] * 1000).toLocaleString()}`);
 
                 updateStatus(task);
             }
@@ -203,7 +224,8 @@ export class ConversationFetchService {
             this.on('repl', 'completed', handleReplDone);
             this.on('file', 'completed', handleFileDone);
 
-            this.enqueueHist({ id: rootEventId, corelationId: rootEventId, causationId: rootEventId, type: 'hist', channelId, before, after });
+            this.enqueueHist({ id: rootEventId, corelationId: rootEventId, causationId: rootEventId, type: 'hist', channelId, before, after })
+                .catch(reject);
         });
     }
 
@@ -279,7 +301,7 @@ export class ConversationFetchService {
     private onEnqueueTask(task: WorkQueueTask) {
         this.tasks.push(task);
 
-        // console.log(`Enqueued: ${ConversationFetchService.taskToString(task)}`);
+        // this.log(`Enqueued: ${ConversationFetchService.taskToString(task)}`);
     }
 
     // save result handlers
@@ -288,7 +310,7 @@ export class ConversationFetchService {
         await this.repo.saveMessages(result.messages.map((v) => {
             const ts = v.ts;
             if (!ts) {
-                console.warn(`Hist: Message without ts@${task.channelId}: ${v.text}`);
+                this.warn(`Hist: Message without ts@${task.channelId}: ${v.text}`);
             }
 
             return {
@@ -303,7 +325,7 @@ export class ConversationFetchService {
         await this.repo.saveMessages(result.messages.map((v) => {
             const ts = v.ts;
             if (!ts) {
-                console.warn(`Replies: Message without ts@${task.channelId}: ${v.text}`);
+                this.warn(`Replies: Message without ts@${task.channelId}: ${v.text}`);
             }
 
             return {
@@ -319,7 +341,7 @@ export class ConversationFetchService {
         const fileId = meta.id;
 
         if (!fileId) {
-            console.error('File task without meta.id');
+            this.error('File task without meta.id');
             return;
         }
 

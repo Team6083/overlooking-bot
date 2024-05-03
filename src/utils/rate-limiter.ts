@@ -23,6 +23,7 @@ export class RateLimiter {
                     this.emit('completed', result);
                     resolve(result);
                 } catch (error) {
+                    console.log(`enqueueTask promise error`, error);
                     reject(error);
                 }
             }, (error: any) => {
@@ -61,5 +62,9 @@ export class RateLimiter {
 
     getQueueLength() {
         return this.queue.length();
+    }
+
+    getRunningCount() {
+        return this.queue.running();
     }
 }
