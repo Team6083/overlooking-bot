@@ -60,5 +60,20 @@ export class SlackStorageModule {
         this.app.message(subtype('message_deleted'), async ({ event }) => {
             await this.deletedMsgCollection.insertOne(event);
         });
+
+        this.app.event('channel_created', async ({ event, client, context }) => {
+            console.log(`Got channel_created ${event.channel.name} (${event.channel.id})`);
+
+            if (!context.botUserId) {
+                console.error('Bot User ID is not found');
+                return;
+            }
+
+            await client.conversations.invite({
+                token: this.slackUserToken,
+                channel: event.channel.id,
+                users: context.botUserId,
+            });
+        });
     }
 }
