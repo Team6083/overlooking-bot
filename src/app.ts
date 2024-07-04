@@ -1,13 +1,15 @@
 import { config } from 'dotenv';
 config();
+
 import { App } from '@slack/bolt';
 import * as mongoDB from 'mongodb';
+
 import { getBoltLogLevel } from './utils/slack';
 import { SlackStorageModule } from './slack-storage';
 import { AppHomeModule } from './app-home';
-
-import 'dotenv/config'
 import { ReactionCheckModule } from './reaction-check';
+import { MongoDBSlackStorageRepository } from './message-repository/mongo-repo';
+import { ConversationFetchService } from './conversation-fetch';
 
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -19,7 +21,7 @@ const app = new App({
 });
 
 app.use(async ({ next }) => {
-    await next!();
+    await next();
 });
 
 (async () => {
@@ -28,25 +30,34 @@ app.use(async ({ next }) => {
     const client = new mongoDB.MongoClient(process.env.DB_CONN_STRING);
     await client.connect();
 
-    const msgCollection = client.db().collection('messages');
-    const changedMsgCollection = client.db().collection('changedMessages');
-    const deletedMsgCollection = client.db().collection('deletedMessages');
-
     const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     if (!fileSavePrefix) throw new Error('Env SLACK_FILE_SAVE_PREFIX is required.');
 
-    const slackUserToken = process.env.SLACK_USER_TOKEN
+    const msgCollection = client.db().collection('messages');
+    const changedMsgCollection = client.db().collection('changedMessages');
+    const deletedMsgCollection = client.db().collection('deletedMessages');
+    const fileMetadataCollection = client.db().collection('file_metadata');
+
+    const slackStorageRepo = new MongoDBSlackStorageRepository(
+        msgCollection,
+        changedMsgCollection,
+        deletedMsgCollection,
+        fileMetadataCollection,
+        fileSavePrefix,
+    );
+
+    const slackUserToken = process.env.SLACK_USER_TOKEN;
     if (!slackUserToken) throw new Error('Env SLACK_USER_TOKEN is required.');
+
+    const conversationFetchService = new ConversationFetchService(app.client, slackStorageRepo);
 
     // Start your app
     await app.start();
 
     const slackStorageModule = new SlackStorageModule(
         app,
-        msgCollection,
-        changedMsgCollection,
-        deletedMsgCollection,
-        fileSavePrefix,
+        slackStorageRepo,
+        conversationFetchService,
         slackUserToken,
     );
     await slackStorageModule.init();
@@ -62,4 +73,5 @@ app.use(async ({ next }) => {
     await reactionCheckModule.init();
 
     console.log('⚡️ Bolt app is running!');
+
 })();
