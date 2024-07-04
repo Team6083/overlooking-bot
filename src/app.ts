@@ -3,8 +3,6 @@ config();
 
 import { App } from '@slack/bolt';
 import * as mongoDB from 'mongodb';
-import express from 'express';
-import { ExpressAdapter } from '@bull-board/express';
 
 import { getBoltLogLevel } from './utils/slack';
 import { SlackStorageModule } from './slack-storage';
@@ -32,9 +30,6 @@ app.use(async ({ next }) => {
     const client = new mongoDB.MongoClient(process.env.DB_CONN_STRING);
     await client.connect();
 
-    if (!process.env.REDIS_CONN_STRING) throw new Error('Env REDIS_CONN_STRING is required.');
-    const redisUrl = process.env.REDIS_CONN_STRING;
-
     const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     if (!fileSavePrefix) throw new Error('Env SLACK_FILE_SAVE_PREFIX is required.');
 
@@ -53,9 +48,6 @@ app.use(async ({ next }) => {
 
     const slackUserToken = process.env.SLACK_USER_TOKEN;
     if (!slackUserToken) throw new Error('Env SLACK_USER_TOKEN is required.');
-
-    const serverAdapter = new ExpressAdapter();
-    serverAdapter.setBasePath('/admin/queues');
 
     const conversationFetchService = new ConversationFetchService(app.client, slackStorageRepo);
 
@@ -82,10 +74,4 @@ app.use(async ({ next }) => {
 
     console.log('⚡️ Bolt app is running!');
 
-    const expressApp = express();
-    expressApp.use('/admin/queues', serverAdapter.getRouter());
-
-    expressApp.listen(3000, () => {
-        console.log('Bull Board is running');
-    });
 })();

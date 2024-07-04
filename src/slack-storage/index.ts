@@ -1,5 +1,4 @@
 import { App, ignoreSelf, KnownEventFromType, subtype } from "@slack/bolt";
-import { Job } from "bull";
 
 import { getFileArrayBufFromSlack } from "../utils/slack";
 import { ConversationFetchService } from "../conversation-fetch";
