@@ -3,6 +3,14 @@ import { mkdir } from "fs/promises";
 import { Collection } from "mongodb";
 import { downloadFileFromSlack } from "../utils/slack";
 
+export type SlackStorageModuleOptions = {
+    autoJoinChannels: boolean;
+}
+
+const defaultOptions: Partial<SlackStorageModuleOptions> = {
+    autoJoinChannels: true,
+}
+
 export class SlackStorageModule {
 
     constructor(
@@ -12,6 +20,7 @@ export class SlackStorageModule {
         private deletedMsgCollection: Collection,
         private fileSavePrefix: string,
         private slackUserToken: string,
+        private options: Partial<SlackStorageModuleOptions> = defaultOptions,
     ) { }
 
     async init() {
@@ -69,11 +78,15 @@ export class SlackStorageModule {
                 return;
             }
 
-            await client.conversations.invite({
-                token: this.slackUserToken,
-                channel: event.channel.id,
-                users: context.botUserId,
-            });
+            if (this.options.autoJoinChannels) {
+                console.log(`Trying to invite bot to ${event.channel.name} (${event.channel.id})`);
+
+                await client.conversations.invite({
+                    token: this.slackUserToken,
+                    channel: event.channel.id,
+                    users: context.botUserId,
+                });
+            }
         });
     }
 }

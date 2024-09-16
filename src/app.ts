@@ -38,8 +38,12 @@ app.use(async ({ next }) => {
     const slackUserToken = process.env.SLACK_USER_TOKEN
     if (!slackUserToken) throw new Error('Env SLACK_USER_TOKEN is required.');
 
+    const useReactionCheck = process.env.USE_REACTION_CHECK === 'true';
+
     // Start your app
     await app.start();
+
+    const autoJoinChannels = process.env.AUTO_JOIN_CHANNELS === 'true';
 
     const slackStorageModule = new SlackStorageModule(
         app,
@@ -48,18 +52,24 @@ app.use(async ({ next }) => {
         deletedMsgCollection,
         fileSavePrefix,
         slackUserToken,
+        {
+            autoJoinChannels,
+        }
     );
     await slackStorageModule.init();
 
     const appHomeModule = new AppHomeModule(app);
     await appHomeModule.init();
 
-    let ignoredUsers: string[] = [];
-    if (process.env.REACTION_USER_IGN_LIST) {
-        ignoredUsers = process.env.REACTION_USER_IGN_LIST.split(',');
+    if (useReactionCheck) {
+        let ignoredUsers: string[] = [];
+        if (process.env.REACTION_USER_IGN_LIST) {
+            ignoredUsers = process.env.REACTION_USER_IGN_LIST.split(',');
+        }
+
+        const reactionCheckModule = new ReactionCheckModule(app, ignoredUsers);
+        await reactionCheckModule.init();
     }
-    const reactionCheckModule = new ReactionCheckModule(app, ignoredUsers);
-    await reactionCheckModule.init();
 
     console.log('⚡️ Bolt app is running!');
 })();
