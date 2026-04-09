@@ -1,6 +1,6 @@
-import { App, View } from "@slack/bolt";
+import { App, type types } from "@slack/bolt";
 
-function renderAppHome(): View {
+function renderAppHome(): types.View {
     return {
         "type": "home",
         "blocks": [
@@ -39,7 +39,7 @@ function renderAppHome(): View {
     };
 }
 
-function renderAppHomeHelp(): View {
+function renderAppHomeHelp(): types.View {
     return {
         "type": "modal",
         "close": {

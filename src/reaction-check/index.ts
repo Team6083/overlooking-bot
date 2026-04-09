@@ -1,6 +1,5 @@
 import { App, ignoreSelf, KnownEventFromType, subtype } from "@slack/bolt";
-import { Member } from "@slack/web-api/dist/response/UsersListResponse";
-
+import { Member } from "@slack/web-api/dist/types/response/UsersListResponse";
 
 export class ReactionCheckModule {
     constructor(
@@ -20,7 +19,7 @@ export class ReactionCheckModule {
             return this.userList;
         }
 
-        const users = (await this.app.client.users.list())
+        const users = (await this.app.client.users.list({}))
             .members?.filter((v) => !v.is_invited_user && !v.is_app_user && !v.is_bot && !v.deleted && v.id !== 'USLACKBOT');
 
         this.userList = users;

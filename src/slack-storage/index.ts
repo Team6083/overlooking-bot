@@ -30,6 +30,10 @@ export class SlackStorageModule {
             if (args.payload.type === 'message') {
                 const payload = args.payload as KnownEventFromType<'message'>
 
+                if ((payload.subtype as string) === 'group_join') {
+                    payload.subtype = 'channel_join';
+                }
+
                 // delete join message
                 if (payload.subtype === 'channel_join' && payload.user === args.context.botUserId) {
                     await args.client.chat.delete({
@@ -40,7 +44,7 @@ export class SlackStorageModule {
                 }
             }
 
-            await ignoreSelf()(args);
+            await ignoreSelf(args);
         });
 
         this.app.message('', async ({ message, logger }) => {
