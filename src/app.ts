@@ -72,4 +72,14 @@ app.use(async ({ next }) => {
     }
 
     console.log('⚡️ Bolt app is running!');
+
+    const shutdown = async () => {
+        console.log('Shutting down...');
+        await app.stop();
+        await client.close();
+        process.exit(0);
+    };
+
+    process.on('SIGTERM', shutdown);
+    process.on('SIGINT', shutdown);
 })();
