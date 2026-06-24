@@ -8,6 +8,8 @@ import { AppHomeModule } from './app-home';
 
 import 'dotenv/config'
 import { ReactionCheckModule } from './reaction-check';
+import { GoogleDriveCheckModule } from './google-drive-check';
+import { google } from 'googleapis';
 
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -31,6 +33,7 @@ app.use(async ({ next }) => {
     const msgCollection = client.db().collection('messages');
     const changedMsgCollection = client.db().collection('changedMessages');
     const deletedMsgCollection = client.db().collection('deletedMessages');
+    const driveJobCollection = client.db().collection('driveComplianceJobs');
 
     const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     if (!fileSavePrefix) throw new Error('Env SLACK_FILE_SAVE_PREFIX is required.');
@@ -69,6 +72,37 @@ app.use(async ({ next }) => {
 
         const reactionCheckModule = new ReactionCheckModule(app, ignoredUsers);
         await reactionCheckModule.init();
+    }
+
+    const useGoogleDriveCheck = process.env.USE_GOOGLE_DRIVE_CHECK === 'true';
+    if (useGoogleDriveCheck) {
+        if (!process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON) {
+            throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_FILE or GOOGLE_SERVICE_ACCOUNT_KEY_JSON is required when USE_GOOGLE_DRIVE_CHECK=true.');
+        }
+
+        const auth = new google.auth.GoogleAuth({
+            keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
+            credentials: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON
+                ? JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON)
+                : undefined,
+            scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+        });
+        const driveClient = google.drive({ version: 'v3', auth });
+
+        const gdCheckModule = new GoogleDriveCheckModule(
+            app,
+            driveClient,
+            driveJobCollection,
+            {
+                allowedSharedDriveIds: (process.env.GOOGLE_DRIVE_ALLOWED_SHARED_DRIVE_IDS || '').split(',').filter(Boolean),
+                allowedFolderIds: (process.env.GOOGLE_DRIVE_ALLOWED_FOLDER_IDS || '').split(',').filter(Boolean),
+                allowDomainSharing: process.env.GOOGLE_DRIVE_ALLOW_DOMAIN_SHARING === 'true',
+                maxParentTraversalDepth: 10,
+            },
+            process.env.GOOGLE_DRIVE_REPORT_ONLY_VIOLATIONS !== 'false',
+            process.env.GOOGLE_DRIVE_AUDIT_CHANNEL || undefined,
+        );
+        await gdCheckModule.init();
     }
 
     console.log('⚡️ Bolt app is running!');
