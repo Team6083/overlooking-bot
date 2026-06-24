@@ -32,79 +32,72 @@ function extractDriveLinks(text: string): Array<{ id: string; url: string }> {
     return results;
 }
 
+const STATUS_EMOJI: Record<string, string> = {
+    compliant: ':white_check_mark:',
+    violations: ':warning:',
+    cannot_check: ':grey_question:',
+    not_accessible: ':no_entry:',
+};
+
+const STATUS_LABEL: Record<string, string> = {
+    compliant: '合規',
+    violations: '發現違規',
+    cannot_check: '無法稽核',
+    not_accessible: '無法存取',
+};
+
+function buildFileSection(result: ComplianceResult): string {
+    const fileLink = result.fileName
+        ? `<${result.url}|${result.fileName}>`
+        : result.url;
+
+    const lines: string[] = [
+        `${STATUS_EMOJI[result.status]} *${fileLink}*`,
+        `*狀態：* ${STATUS_LABEL[result.status]}`,
+    ];
+
+    if (result.status === 'violations') {
+        for (const v of result.violations) {
+            if (v.kind === 'public_access') {
+                lines.push(v.allowFileDiscovery
+                    ? ':unlock: 公開分享（任何人都可搜尋並存取）'
+                    : ':link: 連結分享（知道連結的任何人可存取）');
+            } else if (v.kind === 'domain_sharing') {
+                lines.push(':office: 組織內分享（整個組織都可存取）');
+            } else {
+                lines.push(':file_folder: 檔案不在核准的位置（Shared Drive 或指定資料夾）');
+            }
+        }
+    } else if (result.status === 'cannot_check') {
+        lines.push('Bot 沒有權限查看此檔案的分享設定。');
+    } else if (result.status === 'not_accessible') {
+        lines.push('Bot 無法存取此檔案，可能是連結無效或存取受限。');
+    }
+
+    return lines.join('\n');
+}
+
 function buildComplianceBlocks(
     results: ComplianceResult[],
     auditContext?: { userId: string; channel: string },
 ): KnownBlock[] {
+    const headerText = auditContext
+        ? `*Google Drive 合規稽核報告*\n由 <@${auditContext.userId}> 分享於 <#${auditContext.channel}>`
+        : '*Google Drive 合規稽核報告*';
+
     const blocks: KnownBlock[] = [
         {
-            type: 'header',
-            text: { type: 'plain_text', text: 'Google Drive 合規稽核報告', emoji: true },
+            type: 'section',
+            text: { type: 'mrkdwn', text: headerText },
         },
     ];
 
-    if (auditContext) {
-        blocks.push({
-            type: 'context',
-            elements: [{
-                type: 'mrkdwn',
-                text: `由 <@${auditContext.userId}> 分享於 <#${auditContext.channel}>`,
-            }],
-        });
-    }
-
     for (const result of results) {
-        const linkText = result.fileName
-            ? `*<${result.url}|${result.fileName}>*`
-            : `*${result.url}*`;
-
         blocks.push({ type: 'divider' });
-
         blocks.push({
             type: 'section',
-            text: { type: 'mrkdwn', text: linkText },
+            text: { type: 'mrkdwn', text: buildFileSection(result) },
         });
-
-        const statusLabel: Record<string, string> = {
-            compliant: ':white_check_mark: 合規',
-            violations: ':warning: 發現違規',
-            cannot_check: ':grey_question: 無法稽核',
-            not_accessible: ':no_entry: 無法存取',
-        };
-
-        blocks.push({
-            type: 'context',
-            elements: [{ type: 'mrkdwn', text: `狀態：${statusLabel[result.status]}` }],
-        });
-
-        if (result.status === 'violations') {
-            for (const v of result.violations) {
-                let text: string;
-                if (v.kind === 'public_access') {
-                    text = v.allowFileDiscovery
-                        ? ':unlock: 公開分享（任何人都可搜尋並存取）'
-                        : ':link: 連結分享（知道連結的任何人可存取）';
-                } else if (v.kind === 'domain_sharing') {
-                    text = ':office: 組織內分享（整個組織都可存取）';
-                } else {
-                    text = ':file_folder: 檔案不在核准的位置（Shared Drive 或指定資料夾）';
-                }
-                blocks.push({
-                    type: 'section',
-                    text: { type: 'mrkdwn', text },
-                });
-            }
-        } else if (result.status === 'cannot_check') {
-            blocks.push({
-                type: 'section',
-                text: { type: 'mrkdwn', text: 'Bot 沒有權限查看此檔案的分享設定。' },
-            });
-        } else if (result.status === 'not_accessible') {
-            blocks.push({
-                type: 'section',
-                text: { type: 'mrkdwn', text: 'Bot 無法存取此檔案，可能是連結無效或存取受限。' },
-            });
-        }
     }
 
     return blocks;
