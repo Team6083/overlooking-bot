@@ -156,8 +156,8 @@ export class GoogleDriveCheckModule {
                 )
             );
 
-            const hasViolations = results.some(r => r.status === 'violations');
-            const skipNotify = this.reportOnlyViolations && !hasViolations;
+            const allCompliant = results.every(r => r.status === 'compliant');
+            const skipNotify = this.reportOnlyViolations && allCompliant;
 
             if (!skipNotify && 'user' in message && message.user) {
                 // 只有傳訊者看得到的 ephemeral 通知
