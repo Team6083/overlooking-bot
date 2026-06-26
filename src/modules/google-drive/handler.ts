@@ -2,7 +2,7 @@ import { App } from '@slack/bolt';
 import { KnownBlock } from '@slack/types';
 import { drive_v3 } from 'googleapis';
 import { Collection } from 'mongodb';
-import { checkDriveCompliance, ComplianceCheckerOptions, ComplianceResult } from '../google-drive-checker';
+import { checkDriveCompliance, ComplianceCheckerOptions, ComplianceResult } from './checker';
 
 const DRIVE_LINK_PATTERNS = [
     /https?:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/g,
