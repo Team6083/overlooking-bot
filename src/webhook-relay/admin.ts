@@ -80,6 +80,21 @@ export class WebhookAdmin {
         return blocks;
     }
 
+    /**
+     * Run the work that follows an early ack. If it throws, replace the "Saving…" modal with an
+     * error instead of leaving it spinning.
+     */
+    private async afterAck(update: (v: View) => Promise<unknown>, work: () => Promise<void>) {
+        try {
+            await work();
+        } catch (err: any) {
+            console.error('Webhook admin action failed', err);
+            const code = err?.data?.error ?? err?.code ?? 'error';
+            await update(renderMessage('Something went wrong', `:x: The change may not have been saved (\`${code}\`). Check the App Home and try again.`))
+                .catch((e) => console.error('Failed to show error view', e));
+        }
+    }
+
     init() {
         this.app.action('webhook_create', async ({ ack, body, client }) => {
             await ack();
@@ -125,44 +140,49 @@ export class WebhookAdmin {
             }
             await ack({ response_action: 'update', view: renderMessage(editingId ? 'Edit webhook' : 'New webhook', ':hourglass_flowing_sand: Saving…') });
             const update = (v: View) => client.views.update({ view_id: view.id, view: v });
+            await this.afterAck(update, async () => {
+                if (!(await this.isOwner(client, userId, { fresh: true }))) {
+                    await update(renderMessage('Not allowed', 'Only Slack workspace owners can manage webhooks.'));
+                    return;
+                }
 
-            if (!(await this.isOwner(client, userId, { fresh: true }))) {
-                await update(renderMessage('Not allowed', 'Only Slack workspace owners can manage webhooks.'));
-                return;
-            }
+                const problems = await ensureMembership(client, input);
+                if (problems) {
+                    await update(renderForm({ editingId, values: input, error: problems }));
+                    return;
+                }
 
-            const problems = await ensureMembership(client, input);
-            if (problems) {
-                await update(renderForm({ editingId, values: input, error: problems }));
-                return;
-            }
-
-            if (editingId) {
-                await this.store.update(editingId, input);
-                await update(renderMessage('Edit webhook', `:white_check_mark: *${escape(input.name)}* saved.`));
-            } else {
-                const { doc, secret } = await this.store.create(input, userId);
-                await update(renderSecret(doc, buildWebhookUrl(this.publicBaseUrl, doc._id, secret), 'Webhook created'));
-            }
-            await this.republishHome(client, userId);
+                if (editingId) {
+                    await this.store.update(editingId, input);
+                    await update(renderMessage('Edit webhook', `:white_check_mark: *${escape(input.name)}* saved.`));
+                } else {
+                    const { doc, secret } = await this.store.create(input, userId);
+                    await update(renderSecret(doc, buildWebhookUrl(this.publicBaseUrl, doc._id, secret), 'Webhook created'));
+                }
+            });
+            // Outside afterAck: a failure here must not replace a just-shown URL with an error.
+            await this.republishHome(client, userId).catch((err) => console.error('Failed to refresh App Home', err));
         });
 
         this.app.view(ROTATE_CALLBACK, async ({ ack, body, view, client }) => {
             await ack({ response_action: 'update', view: renderMessage('Regenerate URL', ':hourglass_flowing_sand: Working…') });
             const update = (v: View) => client.views.update({ view_id: view.id, view: v });
             const userId = body.user.id;
-            if (!(await this.isOwner(client, userId, { fresh: true }))) {
-                await update(renderMessage('Not allowed', 'Only Slack workspace owners can manage webhooks.'));
-                return;
-            }
-            const webhook = await this.store.get(view.private_metadata);
-            const secret = webhook && await this.store.rotateSecret(webhook._id);
-            if (!webhook || !secret) {
-                await update(renderMessage('Regenerate URL', 'This webhook no longer exists.'));
-                return;
-            }
-            await update(renderSecret(webhook, buildWebhookUrl(this.publicBaseUrl, webhook._id, secret), 'URL regenerated'));
-            await this.republishHome(client, userId);
+            await this.afterAck(update, async () => {
+                if (!(await this.isOwner(client, userId, { fresh: true }))) {
+                    await update(renderMessage('Not allowed', 'Only Slack workspace owners can manage webhooks.'));
+                    return;
+                }
+                const webhook = await this.store.get(view.private_metadata);
+                const secret = webhook && await this.store.rotateSecret(webhook._id);
+                if (!webhook || !secret) {
+                    await update(renderMessage('Regenerate URL', 'This webhook no longer exists.'));
+                    return;
+                }
+                await update(renderSecret(webhook, buildWebhookUrl(this.publicBaseUrl, webhook._id, secret), 'URL regenerated'));
+            });
+            // Outside afterAck: a failure here must not replace a just-shown URL with an error.
+            await this.republishHome(client, userId).catch((err) => console.error('Failed to refresh App Home', err));
         });
 
         this.app.view(DELETE_CALLBACK, async ({ ack, body, view, client }) => {
