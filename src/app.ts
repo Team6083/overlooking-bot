@@ -10,6 +10,8 @@ import 'dotenv/config'
 import { ReactionCheckModule } from './reaction-check';
 import { GoogleDriveCheckModule } from './google-drive-check';
 import { google } from 'googleapis';
+import { WebhookRelayModule } from './webhook-relay';
+import { WebhookDoc } from './webhook-relay/store';
 
 const app = new App({
     token: process.env.SLACK_BOT_TOKEN,
@@ -64,6 +66,24 @@ app.use(async ({ next }) => {
     const appHomeModule = new AppHomeModule(app);
     await appHomeModule.init();
 
+    let webhookRelayModule: WebhookRelayModule | undefined;
+    if (process.env.USE_WEBHOOK_RELAY === 'true') {
+        const botToken = process.env.SLACK_BOT_TOKEN;
+        if (!botToken) throw new Error('Env SLACK_BOT_TOKEN is required.');
+        const publicBaseUrl = process.env.WEBHOOK_PUBLIC_BASE_URL;
+        if (!publicBaseUrl) throw new Error('Env WEBHOOK_PUBLIC_BASE_URL is required when USE_WEBHOOK_RELAY=true.');
+        const port = Number(process.env.WEBHOOK_PORT ?? 3000);
+        if (!Number.isInteger(port) || port <= 0) throw new Error('Env WEBHOOK_PORT must be a port number.');
+
+        webhookRelayModule = new WebhookRelayModule(
+            client.db().collection<WebhookDoc>('webhooks'),
+            msgCollection,
+            { botToken, port, publicBaseUrl },
+        );
+        await webhookRelayModule.init(app, appHomeModule);
+        console.log(`Webhook relay listening on port ${port}`);
+    }
+
     if (useReactionCheck) {
         let ignoredUsers: string[] = [];
         if (process.env.REACTION_USER_IGN_LIST) {
@@ -109,6 +129,7 @@ app.use(async ({ next }) => {
 
     const shutdown = async () => {
         console.log('Shutting down...');
+        await webhookRelayModule?.stop();
         await app.stop();
         await client.close();
         process.exit(0);
