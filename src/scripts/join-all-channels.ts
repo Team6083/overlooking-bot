@@ -24,7 +24,23 @@ async function main() {
     if (!botUserId) throw new Error('Cannot resolve bot user id.');
     console.log(`Bot user: ${botUserId}${dryRun ? ' (dry run)' : ''}`);
 
-    const channels: { id: string; name: string }[] = [];
+    // Channels the bot is already a member of (needs channels:read + groups:read on the bot token).
+    const botChannelIds = new Set<string>();
+    let botCursor: string | undefined;
+    do {
+        const res = await botClient.users.conversations({
+            types: 'public_channel,private_channel',
+            exclude_archived: true,
+            limit: 200,
+            cursor: botCursor,
+        });
+        for (const c of res.channels ?? []) {
+            if (c.id) botChannelIds.add(c.id);
+        }
+        botCursor = res.response_metadata?.next_cursor || undefined;
+    } while (botCursor);
+
+    const channels: { id: string; name: string; userIsMember: boolean }[] = [];
     let cursor: string | undefined;
     do {
         const res = await userClient.conversations.list({
@@ -34,17 +50,29 @@ async function main() {
             cursor,
         });
         for (const c of res.channels ?? []) {
-            if (c.id) channels.push({ id: c.id, name: c.name ?? c.id });
+            if (c.id) channels.push({ id: c.id, name: c.name ?? c.id, userIsMember: c.is_member === true });
         }
         cursor = res.response_metadata?.next_cursor || undefined;
     } while (cursor);
 
     console.log(`Found ${channels.length} channels.`);
 
-    let invited = 0, already = 0, failed = 0;
+    let invited = 0, already = 0, skipped = 0, failed = 0;
     for (const [i, c] of channels.entries()) {
         const label = `[${i + 1}/${channels.length}] #${c.name} (${c.id})`;
+        if (botChannelIds.has(c.id)) {
+            already++;
+            console.log(`${label} -> already in channel`);
+            continue;
+        }
+        // conversations.invite requires the inviting user to be in the channel.
+        if (!c.userIsMember) {
+            skipped++;
+            console.log(`${label} -> skipped (token user is not a member)`);
+            continue;
+        }
         if (dryRun) {
+            invited++;
             console.log(`${label} -> would invite`);
             continue;
         }
@@ -64,10 +92,10 @@ async function main() {
             }
         }
 
-        if (i < channels.length - 1) await sleep(delayMs);
+        await sleep(delayMs);
     }
 
-    console.log(`Done. invited=${invited} already=${already} failed=${failed}`);
+    console.log(`Done. ${dryRun ? 'would_invite' : 'invited'}=${invited} already=${already} skipped=${skipped} failed=${failed}`);
 }
 
 main().catch((err) => {
