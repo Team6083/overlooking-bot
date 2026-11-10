@@ -80,7 +80,11 @@ export class AppHomeModule {
     }
 
     async publish(client: WebClient, userId: string) {
-        const extra = (await Promise.all(this.sections.map((s) => s(client, userId)))).flat();
+        // A failing section is logged and skipped so the rest of the home still renders.
+        const extra = (await Promise.all(this.sections.map((s) => s(client, userId).catch((err) => {
+            console.error('App Home section failed', err);
+            return [];
+        })))).flat();
         await client.views.publish({ user_id: userId, view: renderAppHome(extra) });
     }
 

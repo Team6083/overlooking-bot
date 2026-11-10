@@ -36,9 +36,13 @@ export class WebhookAdmin {
         private republishHome: RepublishHome,
     ) { }
 
-    async isOwner(client: WebClient, userId: string): Promise<boolean> {
+    /**
+     * Whether the user is a workspace owner. The cache is only for rendering the App Home;
+     * anything that changes a webhook passes `fresh` so a just-demoted owner is refused.
+     */
+    async isOwner(client: WebClient, userId: string, { fresh = false } = {}): Promise<boolean> {
         const cached = this.ownerCache.get(userId);
-        if (cached && cached.at + OWNER_TTL_MS > Date.now()) return cached.owner;
+        if (!fresh && cached && cached.at + OWNER_TTL_MS > Date.now()) return cached.owner;
         const res = await client.users.info({ user: userId });
         const owner = !!(res.user?.is_owner || res.user?.is_primary_owner);
         this.ownerCache.set(userId, { owner, at: Date.now() });
@@ -88,14 +92,15 @@ export class WebhookAdmin {
             await ack();
             if (body.type !== 'block_actions' || action.type !== 'overflow') return;
             const userId = body.user.id;
-            if (!(await this.isOwner(client, userId))) return;
-
             const [op, id] = action.selected_option.value.split(':');
+            // Toggling changes state right away, so it needs an uncached owner check.
+            if (!(await this.isOwner(client, userId, { fresh: op === 'toggle' }))) return;
+
             const webhook = await this.store.get(id);
             if (!webhook) return;
 
             if (op === 'edit') {
-                await client.views.open({ trigger_id: body.trigger_id, view: renderForm(webhook) });
+                await client.views.open({ trigger_id: body.trigger_id, view: renderForm({ editingId: webhook._id, values: webhook }) });
             } else if (op === 'rotate') {
                 await client.views.open({ trigger_id: body.trigger_id, view: renderConfirm(ROTATE_CALLBACK, webhook, 'Regenerate URL', `Regenerate the URL of *${escape(webhook.name)}*? The current URL stops working immediately.`) });
             } else if (op === 'delete') {
@@ -106,108 +111,124 @@ export class WebhookAdmin {
             }
         });
 
+        // Slack drops a view_submission response after 3s, and the membership checks below can take
+        // longer. So only cheap validation happens before ack(); the rest updates the modal after.
         this.app.view(FORM_CALLBACK, async ({ ack, body, view, client }) => {
             const userId = body.user.id;
-            if (!(await this.isOwner(client, userId))) {
-                await ack({ response_action: 'errors', errors: { [B.name]: 'Only Slack workspace owners can manage webhooks.' } });
-                return;
-            }
-
+            const editingId = view.private_metadata;
             const input = readForm(view.state.values);
-            const errors: Record<string, string> = {};
-            if (!input.name) errors[B.name] = 'Name is required.';
-            if (!input.defaultChannel) errors[B.defaultChannel] = 'Default channel is required.';
-            if (input.defaultIdentity.iconUrl && !/^https?:\/\//.test(input.defaultIdentity.iconUrl)) {
-                errors[B.iconUrl] = 'Icon URL must start with http:// or https://.';
-            }
-            if (input.defaultIdentity.iconEmoji && !/^:[^:\s]+:$/.test(input.defaultIdentity.iconEmoji)) {
-                errors[B.iconEmoji] = 'Use the :emoji_name: form.';
-            }
-            if (Object.keys(errors).length === 0) {
-                Object.assign(errors, await ensureMembership(client, input));
-            }
+
+            const errors = validateForm(input);
             if (Object.keys(errors).length > 0) {
                 await ack({ response_action: 'errors', errors });
                 return;
             }
+            await ack({ response_action: 'update', view: renderMessage(editingId ? 'Edit webhook' : 'New webhook', ':hourglass_flowing_sand: Saving…') });
+            const update = (v: View) => client.views.update({ view_id: view.id, view: v });
 
-            const editingId = view.private_metadata;
+            if (!(await this.isOwner(client, userId, { fresh: true }))) {
+                await update(renderMessage('Not allowed', 'Only Slack workspace owners can manage webhooks.'));
+                return;
+            }
+
+            const problems = await ensureMembership(client, input);
+            if (problems) {
+                await update(renderForm({ editingId, values: input, error: problems }));
+                return;
+            }
+
             if (editingId) {
                 await this.store.update(editingId, input);
-                await ack();
+                await update(renderMessage('Edit webhook', `:white_check_mark: *${escape(input.name)}* saved.`));
             } else {
                 const { doc, secret } = await this.store.create(input, userId);
-                await ack({ response_action: 'update', view: renderSecret(doc, buildWebhookUrl(this.publicBaseUrl, doc._id, secret), 'Webhook created') });
+                await update(renderSecret(doc, buildWebhookUrl(this.publicBaseUrl, doc._id, secret), 'Webhook created'));
             }
             await this.republishHome(client, userId);
         });
 
         this.app.view(ROTATE_CALLBACK, async ({ ack, body, view, client }) => {
+            await ack({ response_action: 'update', view: renderMessage('Regenerate URL', ':hourglass_flowing_sand: Working…') });
+            const update = (v: View) => client.views.update({ view_id: view.id, view: v });
             const userId = body.user.id;
-            if (!(await this.isOwner(client, userId))) { await ack(); return; }
+            if (!(await this.isOwner(client, userId, { fresh: true }))) {
+                await update(renderMessage('Not allowed', 'Only Slack workspace owners can manage webhooks.'));
+                return;
+            }
             const webhook = await this.store.get(view.private_metadata);
             const secret = webhook && await this.store.rotateSecret(webhook._id);
-            if (!webhook || !secret) { await ack(); return; }
-            await ack({ response_action: 'update', view: renderSecret(webhook, buildWebhookUrl(this.publicBaseUrl, webhook._id, secret), 'URL regenerated') });
+            if (!webhook || !secret) {
+                await update(renderMessage('Regenerate URL', 'This webhook no longer exists.'));
+                return;
+            }
+            await update(renderSecret(webhook, buildWebhookUrl(this.publicBaseUrl, webhook._id, secret), 'URL regenerated'));
             await this.republishHome(client, userId);
         });
 
         this.app.view(DELETE_CALLBACK, async ({ ack, body, view, client }) => {
             await ack();
             const userId = body.user.id;
-            if (!(await this.isOwner(client, userId))) return;
+            if (!(await this.isOwner(client, userId, { fresh: true }))) return;
             await this.store.delete(view.private_metadata);
             await this.republishHome(client, userId);
         });
     }
 }
 
+function validateForm(input: WebhookInput): Record<string, string> {
+    const errors: Record<string, string> = {};
+    if (!input.name) errors[B.name] = 'Name is required.';
+    if (!input.defaultChannel) errors[B.defaultChannel] = 'Default channel is required.';
+    if (input.defaultIdentity.iconUrl && !/^https?:\/\//.test(input.defaultIdentity.iconUrl)) {
+        errors[B.iconUrl] = 'Icon URL must start with http:// or https://.';
+    }
+    if (input.defaultIdentity.iconEmoji && !/^:[^:\s]+:$/.test(input.defaultIdentity.iconEmoji)) {
+        errors[B.iconEmoji] = 'Use the :emoji_name: form.';
+    }
+    return errors;
+}
+
 // ---------- membership ----------
 
 /**
  * Make sure the bot can post to every permitted channel: join public channels it is not in,
- * and report private ones it has not been invited to. Returns form errors keyed by block ID.
+ * and report private ones it has not been invited to. Returns a mrkdwn problem summary, or
+ * null when every channel is usable.
  */
-async function ensureMembership(client: WebClient, input: WebhookInput): Promise<Record<string, string>> {
-    const problems = new Map<string, { reason: string; name?: string }>(); // channel ID -> problem
+async function ensureMembership(client: WebClient, input: WebhookInput): Promise<string | null> {
+    const problems: string[] = [];
 
     await Promise.all(permittedChannels(input).map(async (id) => {
         let info;
         try {
             info = await client.conversations.info({ channel: id });
-        } catch {
-            // channel_not_found here means a private channel the bot has not been invited to.
-            problems.set(id, { reason: 'invite' });
+        } catch (err: any) {
+            if (err?.data?.error === 'channel_not_found') {
+                // The bot cannot see private channels it has not been invited to.
+                problems.push(`<#${id}>: private channel, invite the bot first (\`/invite @bot\`)`);
+            } else {
+                problems.push(`<#${id}>: could not check the channel (\`${err?.data?.error ?? err?.code ?? 'error'}\`), try again`);
+            }
             return;
         }
         const ch = info.channel;
-        if (!ch || ch.is_member) return;
-        if (ch.is_archived) problems.set(id, { reason: 'archived', name: ch.name });
-        else if (ch.is_private) problems.set(id, { reason: 'invite', name: ch.name });
-        else {
+        if (!ch) return;
+        if (ch.is_archived) {
+            problems.push(`<#${id}>: archived`);
+        } else if (ch.is_member) {
+            return;
+        } else if (ch.is_private) {
+            problems.push(`<#${id}>: private channel, invite the bot first (\`/invite @bot\`)`);
+        } else {
             try {
                 await client.conversations.join({ channel: id });
-            } catch {
-                problems.set(id, { reason: 'join', name: ch.name });
+            } catch (err: any) {
+                problems.push(`<#${id}>: the bot could not join (\`${err?.data?.error ?? 'error'}\`)`);
             }
         }
     }));
 
-    const errors: Record<string, string> = {};
-    const byBlock = new Map<string, string[]>();
-    // Input-block errors are plain text, so channel mentions would not render.
-    for (const [id, { reason, name }] of problems) {
-        const block = id === input.defaultChannel ? B.defaultChannel : B.allowedChannels;
-        const ch = name ? `#${name}` : `private channel ${id}`;
-        const label = reason === 'invite' ? `${ch} (invite the bot first)`
-            : reason === 'archived' ? `${ch} (archived)`
-            : `${ch} (bot could not join)`;
-        byBlock.set(block, [...(byBlock.get(block) ?? []), label]);
-    }
-    for (const [block, labels] of byBlock) {
-        errors[block] = `The bot cannot post to: ${labels.join(', ')}.`;
-    }
-    return errors;
+    return problems.length ? `:warning: The bot cannot post to:\n• ${problems.join('\n• ')}` : null;
 }
 
 // ---------- rendering ----------
@@ -273,16 +294,17 @@ function textInput(blockId: string, label: string, opts: { initial?: string; opt
     };
 }
 
-function renderForm(w?: WebhookDoc): View {
+function renderForm({ editingId, values: w, error }: { editingId?: string; values?: WebhookInput; error?: string } = {}): View {
     const overrideOption = { text: { type: 'plain_text' as const, text: 'Let callers override username and icon' }, value: 'allow' };
     return {
         type: 'modal',
         callback_id: FORM_CALLBACK,
-        private_metadata: w?._id ?? '',
-        title: { type: 'plain_text', text: w ? 'Edit webhook' : 'New webhook' },
-        submit: { type: 'plain_text', text: w ? 'Save' : 'Create' },
+        private_metadata: editingId ?? '',
+        title: { type: 'plain_text', text: editingId ? 'Edit webhook' : 'New webhook' },
+        submit: { type: 'plain_text', text: editingId ? 'Save' : 'Create' },
         close: { type: 'plain_text', text: 'Cancel' },
         blocks: [
+            ...(error ? [{ type: 'section', text: { type: 'mrkdwn', text: error } } as KnownBlock] : []),
             textInput(B.name, 'Name', { initial: w?.name, placeholder: 'e.g. Grafana alerts' }),
             {
                 type: 'input',
@@ -354,6 +376,15 @@ function renderConfirm(callbackId: string, w: WebhookDoc, submit: string, text: 
         title: { type: 'plain_text', text: 'Are you sure?' },
         submit: { type: 'plain_text', text: submit },
         close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
+    };
+}
+
+function renderMessage(title: string, text: string): View {
+    return {
+        type: 'modal',
+        title: { type: 'plain_text', text: title },
+        close: { type: 'plain_text', text: 'Close' },
         blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
     };
 }

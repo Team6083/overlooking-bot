@@ -37,6 +37,22 @@ export class WebhookHttpHandler {
         private logger: Logger = console,
     ) { }
 
+    /**
+     * Route a raw request. The path is matched with a plain regex and never URL-decoded, so a
+     * malformed escape such as `%E0%A4%A` cannot throw (IDs and secrets are alphanumeric anyway).
+     */
+    async route(req: IncomingMessage, res: ServerResponse) {
+        const path = (req.url ?? '').split('?')[0];
+        const m = /^\/services\/([A-Za-z0-9]+)\/([A-Za-z0-9]+)\/?$/.exec(path);
+        if (!m) {
+            req.resume();
+            res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('not_found');
+            return;
+        }
+        await this.handle(Object.assign(req, { params: { id: m[1], secret: m[2] } }), res);
+    }
+
     async handle(req: RouteRequest, res: ServerResponse) {
         let result: WebhookResponse;
         try {
@@ -68,10 +84,15 @@ export class WebhookHttpHandler {
         const payload = parseBody(req.headers['content-type'], raw);
         if (isResponse(payload)) return payload;
 
-        const names = needsNameLookup(payload.channel)
+        const lookup = needsNameLookup(payload.channel)
             ? await this.channelNames(permittedChannels(webhook))
-            : {};
-        const channel = selectChannel(webhook, payload.channel, names);
+            : { names: {} };
+        const channel = selectChannel(webhook, payload.channel, lookup.names);
+        if (isResponse(channel) && lookup.failure) {
+            // The name may belong to a channel whose lookup failed: ask the caller to retry
+            // instead of claiming the channel does not exist.
+            return lookup.failure;
+        }
         if (isResponse(channel)) {
             await this.store.recordError(webhook._id, channel.body);
             return channel;
@@ -80,18 +101,9 @@ export class WebhookHttpHandler {
         const args = buildPostArgs(webhook, payload, channel);
         if (isResponse(args)) return args;
 
+        let posted;
         try {
-            const posted = await this.client.chat.postMessage(args as any);
-            await this.store.recordSuccess(webhook._id);
-            if (posted.message) {
-                await this.msgCollection.insertOne({
-                    ...posted.message,
-                    channel: posted.channel,
-                    ts: posted.ts,
-                    overlooking_webhook: { id: webhook._id, name: webhook.name },
-                }).catch((err) => this.logger.error('Failed to archive webhook message', err));
-            }
-            return OK;
+            posted = await this.client.chat.postMessage(args as any);
         } catch (err: any) {
             if (err?.code === ErrorCode.RateLimitedError) {
                 await this.store.recordError(webhook._id, 'rate_limited');
@@ -105,11 +117,26 @@ export class WebhookHttpHandler {
             }
             throw err;
         }
+
+        // The message is in Slack now: bookkeeping failures must not turn this into a 5xx,
+        // or the caller retries and the message is posted twice.
+        await this.store.recordSuccess(webhook._id)
+            .catch((err) => this.logger.error('Failed to record webhook success', err));
+        if (posted.message) {
+            await this.msgCollection.insertOne({
+                ...posted.message,
+                channel: posted.channel,
+                ts: posted.ts,
+                overlooking_webhook: { id: webhook._id, name: webhook.name },
+            }).catch((err) => this.logger.error('Failed to archive webhook message', err));
+        }
+        return OK;
     }
 
-    /** Names of the given channel IDs, cached for a few minutes. */
-    private async channelNames(ids: string[]): Promise<Record<string, string | undefined>> {
+    /** Names of the given channel IDs. Successful lookups are cached; failures are not. */
+    private async channelNames(ids: string[]): Promise<{ names: Record<string, string | undefined>; failure?: WebhookResponse }> {
         const out: Record<string, string | undefined> = {};
+        let failure: WebhookResponse | undefined;
         await Promise.all(ids.map(async (id) => {
             const cached = this.nameCache.get(id);
             if (cached && cached.at + NAME_TTL_MS > Date.now()) {
@@ -119,16 +146,23 @@ export class WebhookHttpHandler {
             try {
                 const info = await this.client.conversations.info({ channel: id });
                 out[id] = info.channel?.name;
-            } catch {
+                this.nameCache.set(id, { name: out[id], at: Date.now() });
+            } catch (err: any) {
+                this.logger.warn(`Channel name lookup failed for ${id}: ${err?.code ?? err}`);
                 out[id] = undefined;
+                failure = err?.code === ErrorCode.RateLimitedError
+                    ? rateLimited(err.retryAfter)
+                    : failure ?? { status: 500, body: 'internal_error' };
             }
-            this.nameCache.set(id, { name: out[id], at: Date.now() });
         }));
-        return out;
+        return { names: out, failure };
     }
 }
 
-/** Read the request body as UTF-8, or null if it exceeds `limit` bytes. */
+/**
+ * Read the request body as UTF-8, or null if it exceeds `limit` bytes. Rejects if the client
+ * disconnects before the body is complete, so an aborted upload cannot leave the promise pending.
+ */
 function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
     return new Promise((resolve, reject) => {
         const chunks: Buffer[] = [];
@@ -147,5 +181,7 @@ function readBody(req: IncomingMessage, limit: number): Promise<string | null> {
         });
         req.on('end', () => { if (!tooLarge) resolve(Buffer.concat(chunks).toString('utf8')); });
         req.on('error', reject);
+        // 'close' after 'end' is a no-op because the promise has already settled.
+        req.on('close', () => { if (!req.complete) reject(new Error('Request aborted')); });
     });
 }

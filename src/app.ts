@@ -13,6 +13,19 @@ import { google } from 'googleapis';
 import { WebhookRelayModule } from './webhook-relay';
 import { WebhookDoc } from './webhook-relay/store';
 
+const app = new App({
+    token: process.env.SLACK_BOT_TOKEN,
+    signingSecret: process.env.SLACK_SIGNING_SECRET,
+    appToken: process.env.SLACK_APP_TOKEN,
+    logLevel: getBoltLogLevel(process.env.LOG_LEVEL),
+    socketMode: true,
+    ignoreSelf: false,
+});
+
+app.use(async ({ next }) => {
+    await next!();
+});
+
 (async () => {
 
     if (!process.env.DB_CONN_STRING) throw new Error('Env DB_CONN_STRING is required.');
@@ -23,33 +36,6 @@ import { WebhookDoc } from './webhook-relay/store';
     const changedMsgCollection = client.db().collection('changedMessages');
     const deletedMsgCollection = client.db().collection('deletedMessages');
     const driveJobCollection = client.db().collection('driveComplianceJobs');
-    const webhookCollection = client.db().collection<WebhookDoc>('webhooks');
-
-    // The webhook relay adds an HTTP route, which Bolt only accepts at construction time.
-    const useWebhookRelay = process.env.USE_WEBHOOK_RELAY === 'true';
-    let webhookRelayModule: WebhookRelayModule | undefined;
-    let webhookPort: number | undefined;
-    if (useWebhookRelay) {
-        const botToken = process.env.SLACK_BOT_TOKEN;
-        if (!botToken) throw new Error('Env SLACK_BOT_TOKEN is required.');
-        const publicBaseUrl = process.env.WEBHOOK_PUBLIC_BASE_URL;
-        if (!publicBaseUrl) throw new Error('Env WEBHOOK_PUBLIC_BASE_URL is required when USE_WEBHOOK_RELAY=true.');
-        webhookPort = Number(process.env.WEBHOOK_PORT ?? 3000);
-        if (!Number.isInteger(webhookPort) || webhookPort <= 0) throw new Error('Env WEBHOOK_PORT must be a port number.');
-
-        webhookRelayModule = new WebhookRelayModule(webhookCollection, msgCollection, { botToken, publicBaseUrl });
-    }
-
-    const app = new App({
-        token: process.env.SLACK_BOT_TOKEN,
-        signingSecret: process.env.SLACK_SIGNING_SECRET,
-        appToken: process.env.SLACK_APP_TOKEN,
-        logLevel: getBoltLogLevel(process.env.LOG_LEVEL),
-        socketMode: true,
-        ignoreSelf: false,
-        customRoutes: webhookRelayModule?.routes(),
-        installerOptions: webhookPort ? { port: webhookPort } : undefined,
-    });
 
     const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
     if (!fileSavePrefix) throw new Error('Env SLACK_FILE_SAVE_PREFIX is required.');
@@ -80,9 +66,22 @@ import { WebhookDoc } from './webhook-relay/store';
     const appHomeModule = new AppHomeModule(app);
     await appHomeModule.init();
 
-    if (webhookRelayModule) {
+    let webhookRelayModule: WebhookRelayModule | undefined;
+    if (process.env.USE_WEBHOOK_RELAY === 'true') {
+        const botToken = process.env.SLACK_BOT_TOKEN;
+        if (!botToken) throw new Error('Env SLACK_BOT_TOKEN is required.');
+        const publicBaseUrl = process.env.WEBHOOK_PUBLIC_BASE_URL;
+        if (!publicBaseUrl) throw new Error('Env WEBHOOK_PUBLIC_BASE_URL is required when USE_WEBHOOK_RELAY=true.');
+        const port = Number(process.env.WEBHOOK_PORT ?? 3000);
+        if (!Number.isInteger(port) || port <= 0) throw new Error('Env WEBHOOK_PORT must be a port number.');
+
+        webhookRelayModule = new WebhookRelayModule(
+            client.db().collection<WebhookDoc>('webhooks'),
+            msgCollection,
+            { botToken, port, publicBaseUrl },
+        );
         await webhookRelayModule.init(app, appHomeModule);
-        console.log(`Webhook relay listening on port ${webhookPort}`);
+        console.log(`Webhook relay listening on port ${port}`);
     }
 
     if (useReactionCheck) {
@@ -130,6 +129,7 @@ import { WebhookDoc } from './webhook-relay/store';
 
     const shutdown = async () => {
         console.log('Shutting down...');
+        await webhookRelayModule?.stop();
         await app.stop();
         await client.close();
         process.exit(0);

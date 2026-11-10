@@ -68,7 +68,7 @@ export class WebhookStore {
     }
 
     async recordSuccess(id: string) {
-        await this.collection.updateOne({ _id: id }, { $set: { lastUsedAt: new Date() } });
+        await this.collection.updateOne({ _id: id }, { $set: { lastUsedAt: new Date() }, $unset: { lastError: '' } });
     }
 
     async recordError(id: string, code: string) {
