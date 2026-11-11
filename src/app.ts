@@ -8,6 +8,7 @@ import { ReactionCheckModule } from './modules/reaction-check';
 import { GoogleDriveCheckModule } from './modules/google-drive/handler';
 import { SettingsStore } from './modules/settings/store';
 import { createWebServer } from './web/server';
+import { WebhookRelayModule } from './modules/webhook-relay';
 
 (async () => {
     const config = loadConfig();
@@ -53,6 +54,18 @@ import { createWebServer } from './web/server';
     const appHomeModule = new AppHomeModule(app);
     await appHomeModule.init();
 
+    let webhookRelayModule: WebhookRelayModule | undefined;
+    if (config.webhookRelay.enabled) {
+        const { port, publicBaseUrl } = config.webhookRelay;
+        webhookRelayModule = new WebhookRelayModule(
+            collections.webhooks,
+            collections.messages,
+            { botToken: config.slack.botToken, port, publicBaseUrl },
+        );
+        await webhookRelayModule.init(app, appHomeModule);
+        console.log(`Webhook relay listening on port ${port}`);
+    }
+
     const settings = settingsStore.get();
 
     if (settings.useReactionCheck) {
@@ -93,6 +106,7 @@ import { createWebServer } from './web/server';
     const shutdown = async () => {
         console.log('Shutting down...');
         httpServer.close();
+        await webhookRelayModule?.stop();
         await app.stop();
         await dbClient.close();
         process.exit(0);

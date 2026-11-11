@@ -35,6 +35,9 @@ export interface Config {
         port: number;
         apiKey: string;
     };
+    webhookRelay:
+        | { enabled: false }
+        | { enabled: true; port: number; publicBaseUrl: string };
 }
 
 function required(name: string): string {
@@ -52,6 +55,18 @@ export function loadConfig(): Config {
 
     if (useGoogleDriveCheck && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON) {
         throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_FILE or GOOGLE_SERVICE_ACCOUNT_KEY_JSON is required when USE_GOOGLE_DRIVE_CHECK=true.');
+    }
+
+    const apiPort = parseInt(process.env.API_PORT || '3000', 10);
+
+    let webhookRelay: Config['webhookRelay'] = { enabled: false };
+    if (process.env.USE_WEBHOOK_RELAY === 'true') {
+        const publicBaseUrl = optional('WEBHOOK_PUBLIC_BASE_URL');
+        if (!publicBaseUrl) throw new Error('Env WEBHOOK_PUBLIC_BASE_URL is required when USE_WEBHOOK_RELAY=true.');
+        const port = Number(process.env.WEBHOOK_PORT ?? 3000);
+        if (!Number.isInteger(port) || port <= 0) throw new Error('Env WEBHOOK_PORT must be a port number.');
+        if (port === apiPort) throw new Error(`WEBHOOK_PORT and API_PORT must differ (both are ${port}).`);
+        webhookRelay = { enabled: true, port, publicBaseUrl };
     }
 
     return {
@@ -85,8 +100,9 @@ export function loadConfig(): Config {
             googleServiceAccountKeyJson: optional('GOOGLE_SERVICE_ACCOUNT_KEY_JSON'),
         },
         api: {
-            port: parseInt(process.env.API_PORT || '3000', 10),
+            port: apiPort,
             apiKey: required('API_KEY'),
         },
+        webhookRelay,
     };
 }

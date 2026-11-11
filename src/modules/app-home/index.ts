@@ -1,6 +1,10 @@
 import { App, type types } from "@slack/bolt";
+import type { WebClient } from "@slack/web-api";
 
-function renderAppHome(): types.View {
+/** Extra App Home blocks contributed by other modules, rendered per viewing user. */
+export type HomeSection = (client: WebClient, userId: string) => Promise<types.KnownBlock[]>;
+
+function renderAppHome(extraBlocks: types.KnownBlock[] = []): types.View {
     return {
         "type": "home",
         "blocks": [
@@ -34,7 +38,8 @@ function renderAppHome(): types.View {
                         "action_id": "help-home_btn"
                     }
                 ]
-            }
+            },
+            ...extraBlocks,
         ]
     };
 }
@@ -66,20 +71,28 @@ function renderAppHomeHelp(): types.View {
 }
 
 export class AppHomeModule {
+    private sections: HomeSection[] = [];
+
     constructor(private app: App) { }
+
+    addSection(section: HomeSection) {
+        this.sections.push(section);
+    }
+
+    async publish(client: WebClient, userId: string) {
+        // A failing section is logged and skipped so the rest of the home still renders.
+        const extra = (await Promise.all(this.sections.map((s) => s(client, userId).catch((err) => {
+            console.error('App Home section failed', err);
+            return [];
+        })))).flat();
+        await client.views.publish({ user_id: userId, view: renderAppHome(extra) });
+    }
 
     async init() {
         // Listen for users opening your App Home
         this.app.event('app_home_opened', async ({ event, client, logger }) => {
             try {
-                // Call views.publish with the built-in client
-                const result = await client.views.publish({
-                    // Use the user ID associated with the event
-                    user_id: event.user,
-                    view: renderAppHome()
-                });
-
-                logger.info(result);
+                await this.publish(client, event.user);
             }
             catch (error) {
                 logger.error(error);

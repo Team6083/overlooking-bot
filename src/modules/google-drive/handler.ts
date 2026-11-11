@@ -46,10 +46,16 @@ const STATUS_LABEL: Record<string, string> = {
     not_accessible: '無法存取',
 };
 
+function escapeMrkdwn(text: string): string {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function buildFileSection(result: ComplianceResult): string {
+    // Always wrap the URL in <...> so Slack doesn't auto-link the surrounding
+    // bold markers (`*`) into the URL itself.
     const fileLink = result.fileName
-        ? `<${result.url}|${result.fileName}>`
-        : result.url;
+        ? `<${result.url}|${escapeMrkdwn(result.fileName)}>`
+        : `<${result.url}>`;
 
     const lines: string[] = [
         `${STATUS_EMOJI[result.status]} *${fileLink}*`,

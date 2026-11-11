@@ -1,4 +1,5 @@
 import * as mongoDB from 'mongodb';
+import type { WebhookDoc } from './modules/webhook-relay/store';
 
 export interface DbCollections {
     messages: mongoDB.Collection;
@@ -6,6 +7,7 @@ export interface DbCollections {
     deletedMessages: mongoDB.Collection;
     driveComplianceJobs: mongoDB.Collection;
     settings: mongoDB.Collection;
+    webhooks: mongoDB.Collection<WebhookDoc>;
 }
 
 export async function connectDb(connString: string): Promise<{ client: mongoDB.MongoClient; collections: DbCollections }> {
@@ -20,6 +22,7 @@ export async function connectDb(connString: string): Promise<{ client: mongoDB.M
             deletedMessages: db.collection('deletedMessages'),
             driveComplianceJobs: db.collection('driveComplianceJobs'),
             settings: db.collection('settings'),
+            webhooks: db.collection<WebhookDoc>('webhooks'),
         },
     };
 }
