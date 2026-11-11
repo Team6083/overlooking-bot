@@ -40,6 +40,11 @@ import { WebhookRelayModule } from './modules/webhook-relay';
 
     await app.start();
 
+    const settings = settingsStore.get();
+    const driveCredentialsConfigured = Boolean(
+        config.features.googleServiceAccountKeyFile || config.features.googleServiceAccountKeyJson,
+    );
+
     const slackStorageModule = new SlackStorageModule(
         app,
         collections.messages,
@@ -47,7 +52,7 @@ import { WebhookRelayModule } from './modules/webhook-relay';
         collections.deletedMessages,
         config.app.fileSavePrefix,
         config.slack.userToken,
-        { autoJoinChannels: config.app.autoJoinChannels },
+        { autoJoinChannels: settings.autoJoinChannels },
     );
     await slackStorageModule.init();
 
@@ -66,14 +71,16 @@ import { WebhookRelayModule } from './modules/webhook-relay';
         console.log(`Webhook relay listening on port ${port}`);
     }
 
-    const settings = settingsStore.get();
-
     if (settings.useReactionCheck) {
         const reactionCheckModule = new ReactionCheckModule(app, settings.reactionUserIgnoreList);
         await reactionCheckModule.init();
     }
 
     if (settings.useGoogleDriveCheck) {
+        // The flag may have been enabled through the API, so recheck the credentials here.
+        if (!driveCredentialsConfigured) {
+            throw new Error('useGoogleDriveCheck is on but GOOGLE_SERVICE_ACCOUNT_KEY_FILE / GOOGLE_SERVICE_ACCOUNT_KEY_JSON is not set.');
+        }
         const auth = new google.auth.GoogleAuth({
             keyFile: config.features.googleServiceAccountKeyFile,
             credentials: config.features.googleServiceAccountKeyJson
@@ -88,24 +95,26 @@ import { WebhookRelayModule } from './modules/webhook-relay';
             driveClient,
             collections.driveComplianceJobs,
             {
-                allowedSharedDriveIds: config.features.googleDriveAllowedSharedDriveIds,
-                allowedFolderIds: config.features.googleDriveAllowedFolderIds,
+                allowedSharedDriveIds: settings.googleDriveAllowedSharedDriveIds,
+                allowedFolderIds: settings.googleDriveAllowedFolderIds,
                 allowDomainSharing: config.features.googleDriveAllowDomainSharing,
                 maxParentTraversalDepth: config.features.googleDriveMaxParentTraversalDepth,
             },
-            config.features.googleDriveReportOnlyViolations,
-            config.features.googleDriveAuditChannel,
+            settings.googleDriveReportOnlyViolations,
+            settings.googleDriveAuditChannel,
         );
         await gdCheckModule.init();
     }
 
-    const httpServer = createWebServer(config, collections, settingsStore);
+    const httpServer = config.api.enabled
+        ? await createWebServer(config.api, collections, settingsStore, { driveCredentialsConfigured })
+        : undefined;
 
     console.log('⚡️ Bolt app is running!');
 
     const shutdown = async () => {
         console.log('Shutting down...');
-        httpServer.close();
+        httpServer?.close();
         await webhookRelayModule?.stop();
         await app.stop();
         await dbClient.close();

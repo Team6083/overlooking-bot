@@ -1,58 +1,39 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { ObjectId } from 'mongodb';
 import type { DbCollections } from '../../db';
-import type { ListResponse, PaginationQuery } from '../types';
+import { paginate } from '../pagination';
 
 const VALID_COLLECTIONS = ['messages', 'changedMessages', 'deletedMessages'] as const;
 type MessageCollection = typeof VALID_COLLECTIONS[number];
+
+function resolveCollection(req: Request, res: Response): MessageCollection | undefined {
+    const name = req.query.collection ?? 'messages';
+    if (!VALID_COLLECTIONS.includes(name as MessageCollection)) {
+        res.status(400).json({ error: `collection must be one of: ${VALID_COLLECTIONS.join(', ')}` });
+        return undefined;
+    }
+    return name as MessageCollection;
+}
 
 export function createMessagesRouter(collections: DbCollections): Router {
     const router = Router();
 
     router.get('/', async (req, res) => {
-        const collectionName = (req.query.collection as string) || 'messages';
-        if (!VALID_COLLECTIONS.includes(collectionName as MessageCollection)) {
-            res.status(400).json({ error: `collection must be one of: ${VALID_COLLECTIONS.join(', ')}` });
-            return;
-        }
-
-        const { limit: limitStr, before } = req.query as PaginationQuery;
-        const limit = Math.min(parseInt(String(limitStr || '50'), 10) || 50, 200);
-
-        const col = collections[collectionName as MessageCollection];
-        const filter: Record<string, any> = {};
-        if (before) {
-            try {
-                filter._id = { $lt: new ObjectId(before) };
-            } catch {
-                res.status(400).json({ error: 'invalid before cursor' });
-                return;
-            }
-        }
-
-        const [data, total] = await Promise.all([
-            col.find(filter).sort({ _id: -1 }).limit(limit).toArray(),
-            col.countDocuments(filter),
-        ]);
-
-        const response: ListResponse<any> = {
-            data,
-            total,
-            hasMore: data.length === limit,
-        };
-        res.json(response);
+        const name = resolveCollection(req, res);
+        if (!name) return;
+        const page = await paginate(req, res, collections[name], {});
+        if (page) res.json(page);
     });
 
     router.get('/:id', async (req, res) => {
-        let oid: ObjectId;
-        try {
-            oid = new ObjectId(req.params.id);
-        } catch {
+        const name = resolveCollection(req, res);
+        if (!name) return;
+        if (!ObjectId.isValid(req.params.id)) {
             res.status(400).json({ error: 'invalid id' });
             return;
         }
 
-        const doc = await collections.messages.findOne({ _id: oid });
+        const doc = await collections[name].findOne({ _id: new ObjectId(req.params.id) });
         if (!doc) {
             res.status(404).json({ error: 'not found' });
             return;

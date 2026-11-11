@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { ObjectId } from 'mongodb';
 import type { DbCollections } from '../../db';
-import type { DriveJobResponse, ListResponse, PaginationQuery } from '../types';
+import { paginate } from '../pagination';
 
 const VALID_STATUSES = ['pending', 'completed', 'error'] as const;
 
@@ -9,12 +9,9 @@ export function createDriveRouter(collections: DbCollections): Router {
     const router = Router();
 
     router.get('/jobs', async (req, res) => {
-        const { limit: limitStr, before, status } = req.query as PaginationQuery & { status?: string };
-        const limit = Math.min(parseInt(String(limitStr || '50'), 10) || 50, 200);
-
-        const filter: Record<string, any> = {};
-
-        if (status) {
+        const { status } = req.query;
+        const filter: Record<string, unknown> = {};
+        if (status !== undefined) {
             if (!VALID_STATUSES.includes(status as any)) {
                 res.status(400).json({ error: `status must be one of: ${VALID_STATUSES.join(', ')}` });
                 return;
@@ -22,38 +19,17 @@ export function createDriveRouter(collections: DbCollections): Router {
             filter.status = status;
         }
 
-        if (before) {
-            try {
-                filter._id = { $lt: new ObjectId(before) };
-            } catch {
-                res.status(400).json({ error: 'invalid before cursor' });
-                return;
-            }
-        }
-
-        const [data, total] = await Promise.all([
-            collections.driveComplianceJobs.find(filter).sort({ _id: -1 }).limit(limit).toArray(),
-            collections.driveComplianceJobs.countDocuments(filter),
-        ]);
-
-        const response: ListResponse<DriveJobResponse> = {
-            data: data as unknown as DriveJobResponse[],
-            total,
-            hasMore: data.length === limit,
-        };
-        res.json(response);
+        const page = await paginate(req, res, collections.driveComplianceJobs, filter);
+        if (page) res.json(page);
     });
 
     router.get('/jobs/:id', async (req, res) => {
-        let oid: ObjectId;
-        try {
-            oid = new ObjectId(req.params.id);
-        } catch {
+        if (!ObjectId.isValid(req.params.id)) {
             res.status(400).json({ error: 'invalid id' });
             return;
         }
 
-        const doc = await collections.driveComplianceJobs.findOne({ _id: oid });
+        const doc = await collections.driveComplianceJobs.findOne({ _id: new ObjectId(req.params.id) });
         if (!doc) {
             res.status(404).json({ error: 'not found' });
             return;

@@ -3,11 +3,6 @@ import type { ComplianceResult } from '../modules/google-drive/types';
 
 export type { BotSettings, PatchSettingsBody };
 
-export interface PaginationQuery {
-    limit?: number;
-    before?: string;
-}
-
 export interface ListResponse<T> {
     data: T[];
     total: number;

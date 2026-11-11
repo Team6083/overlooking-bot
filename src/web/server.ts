@@ -1,6 +1,5 @@
 import express, { Router } from 'express';
 import * as http from 'http';
-import type { Config } from '../config';
 import type { DbCollections } from '../db';
 import type { SettingsStore } from '../modules/settings/store';
 import { requireApiKey } from './middleware/auth';
@@ -8,23 +7,30 @@ import { createMessagesRouter } from './routes/messages';
 import { createDriveRouter } from './routes/drive';
 import { createSettingsRouter } from './routes/settings';
 
-export function createWebServer(
-    config: Config,
+/** Starts the REST API; rejects (e.g. on EADDRINUSE) instead of crashing the process later. */
+export async function createWebServer(
+    api: { port: number; apiKey: string },
     collections: DbCollections,
     store: SettingsStore,
-): http.Server {
+    options: { driveCredentialsConfigured: boolean },
+): Promise<http.Server> {
     const app = express();
     app.use(express.json());
 
-    const api = Router();
-    api.use(requireApiKey(config.api.apiKey));
-    api.use('/messages', createMessagesRouter(collections));
-    api.use('/drive', createDriveRouter(collections));
-    api.use('/settings', createSettingsRouter(store));
+    const router = Router();
+    router.use(requireApiKey(api.apiKey));
+    router.use('/messages', createMessagesRouter(collections));
+    router.use('/drive', createDriveRouter(collections));
+    router.use('/settings', createSettingsRouter(store, options));
 
-    app.use('/api', api);
+    app.use('/api', router);
 
-    return app.listen(config.api.port, () => {
-        console.log(`Web server listening on port ${config.api.port}`);
+    const server = http.createServer(app);
+    await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(api.port, () => resolve());
     });
+    server.on('error', (err) => console.error('Web server error:', err));
+    console.log(`Web server listening on port ${api.port}`);
+    return server;
 }
