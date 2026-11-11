@@ -6,7 +6,6 @@ export interface DbCollections {
     changedMessages: mongoDB.Collection;
     deletedMessages: mongoDB.Collection;
     driveComplianceJobs: mongoDB.Collection;
-    settings: mongoDB.Collection;
     webhooks: mongoDB.Collection<WebhookDoc>;
 }
 
@@ -21,7 +20,6 @@ export async function connectDb(connString: string): Promise<{ client: mongoDB.M
             changedMessages: db.collection('changedMessages'),
             deletedMessages: db.collection('deletedMessages'),
             driveComplianceJobs: db.collection('driveComplianceJobs'),
-            settings: db.collection('settings'),
             webhooks: db.collection<WebhookDoc>('webhooks'),
         },
     };

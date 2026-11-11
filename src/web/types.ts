@@ -1,7 +1,4 @@
-import type { BotSettings, PatchSettingsBody } from '../modules/settings/store';
 import type { ComplianceResult } from '../modules/google-drive/types';
-
-export type { BotSettings, PatchSettingsBody };
 
 export interface ListResponse<T> {
     data: T[];
