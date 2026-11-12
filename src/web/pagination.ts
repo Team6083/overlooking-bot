@@ -1,44 +1,29 @@
-import type { Request, Response } from 'express';
-import { Collection, ObjectId } from 'mongodb';
-import type { ListResponse } from './types';
+import { Collection, Document, ObjectId } from 'mongodb';
 
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
+/** Cursors are the last `_id` of a page, base64url-encoded so clients treat them as opaque. */
+export function encodeCursor(id: ObjectId): string {
+    return Buffer.from(id.toHexString(), 'hex').toString('base64url');
+}
 
-/**
- * Lists `col` newest first with an `_id` cursor (`?limit=&before=`). `total` counts every doc
- * matching `filter`, independent of the cursor. Sends a 400 and returns undefined on bad input.
- */
-export async function paginate(
-    req: Request,
-    res: Response,
+export function decodeCursor(cursor: string): ObjectId | undefined {
+    if (!/^[A-Za-z0-9_-]{16}$/.test(cursor)) return undefined;
+    return new ObjectId(Buffer.from(cursor, 'base64url'));
+}
+
+/** One page of `col` newest first, starting after `after`. */
+export async function findPage(
     col: Collection,
     filter: Record<string, unknown>,
-): Promise<ListResponse<any> | undefined> {
-    const { limit: limitStr, before } = req.query;
-    let limit = DEFAULT_LIMIT;
-    if (limitStr !== undefined) {
-        limit = Number(limitStr);
-        if (!Number.isInteger(limit) || limit < 1) {
-            res.status(400).json({ error: 'limit must be a positive integer' });
-            return undefined;
-        }
-        limit = Math.min(limit, MAX_LIMIT);
-    }
-
-    const pageFilter: Record<string, unknown> = { ...filter };
-    if (before !== undefined) {
-        if (typeof before !== 'string' || !ObjectId.isValid(before)) {
-            res.status(400).json({ error: 'invalid before cursor' });
-            return undefined;
-        }
-        pageFilter._id = { $lt: new ObjectId(before) };
-    }
-
+    limit: number,
+    after?: ObjectId,
+): Promise<{ docs: Document[]; nextCursor: string | null }> {
+    const query = after ? { ...filter, _id: { $lt: after } } : filter;
     // Fetch one extra doc to know whether another page exists.
-    const [docs, total] = await Promise.all([
-        col.find(pageFilter).sort({ _id: -1 }).limit(limit + 1).toArray(),
-        col.countDocuments(filter),
-    ]);
-    return { data: docs.slice(0, limit), total, hasMore: docs.length > limit };
+    const docs = await col.find(query).sort({ _id: -1 }).limit(limit + 1).toArray();
+    const hasMore = docs.length > limit;
+    const pageDocs = docs.slice(0, limit);
+    return {
+        docs: pageDocs,
+        nextCursor: hasMore ? encodeCursor(pageDocs[pageDocs.length - 1]._id as ObjectId) : null,
+    };
 }

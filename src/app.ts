@@ -6,7 +6,7 @@ import { SlackStorageModule } from './modules/slack-storage';
 import { AppHomeModule } from './modules/app-home';
 import { ReactionCheckModule } from './modules/reaction-check';
 import { GoogleDriveCheckModule } from './modules/google-drive/handler';
-import { createWebServer } from './web/server';
+import { startHttpServer } from './web/server';
 import { WebhookRelayModule } from './modules/webhook-relay';
 
 (async () => {
@@ -43,14 +43,12 @@ import { WebhookRelayModule } from './modules/webhook-relay';
 
     let webhookRelayModule: WebhookRelayModule | undefined;
     if (config.webhookRelay.enabled) {
-        const { port, publicBaseUrl } = config.webhookRelay;
         webhookRelayModule = new WebhookRelayModule(
             collections.webhooks,
             collections.messages,
-            { botToken: config.slack.botToken, port, publicBaseUrl },
+            { botToken: config.slack.botToken, publicBaseUrl: config.webhookRelay.publicBaseUrl },
         );
         await webhookRelayModule.init(app, appHomeModule);
-        console.log(`Webhook relay listening on port ${port}`);
     }
 
     if (config.features.useReactionCheck) {
@@ -84,16 +82,24 @@ import { WebhookRelayModule } from './modules/webhook-relay';
         await gdCheckModule.init();
     }
 
-    const httpServer = config.api.enabled
-        ? await createWebServer(config.api, collections)
+    // One HTTP server on LISTEN_ADDR for the REST API and the webhook relay; none when both are off.
+    const httpServer = config.api.enabled || webhookRelayModule
+        ? await startHttpServer(config.http, {
+            build: config.build,
+            api: config.api.enabled ? { apiKey: config.api.apiKey, collections } : undefined,
+            webhook: webhookRelayModule?.httpHandler,
+        })
         : undefined;
+    if (httpServer) {
+        const parts = [config.api.enabled && 'REST API (/api/v1)', webhookRelayModule && 'webhook relay (/services)'].filter(Boolean);
+        console.log(`HTTP server listening on ${config.http.host ?? ''}:${config.http.port}: ${parts.join(', ')}`);
+    }
 
     console.log('⚡️ Bolt app is running!');
 
     const shutdown = async () => {
         console.log('Shutting down...');
-        httpServer?.close();
-        await webhookRelayModule?.stop();
+        await new Promise<void>((resolve) => (httpServer ? httpServer.close(() => resolve()) : resolve()));
         await app.stop();
         await dbClient.close();
         process.exit(0);

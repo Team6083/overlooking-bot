@@ -31,13 +31,36 @@ export interface Config {
         googleServiceAccountKeyFile?: string;
         googleServiceAccountKeyJson?: string;
     };
-    /** REST API under /api; disabled unless API_KEY is set. */
+    /** The HTTP server shared by the REST API and the webhook relay (LISTEN_ADDR). */
+    http: ListenAddr;
+    /** Sent as X-App-Version / X-App-Commit; injected at image build time. */
+    build: { version: string; commit: string };
+    /** REST API under /api/v1; disabled unless API_KEY is set. */
     api:
         | { enabled: false }
-        | { enabled: true; port: number; apiKey: string };
+        | { enabled: true; apiKey: string };
     webhookRelay:
         | { enabled: false }
-        | { enabled: true; port: number; publicBaseUrl: string };
+        | { enabled: true; publicBaseUrl: string };
+}
+
+export type ListenAddr = { host?: string; port: number };
+
+/** Parses `:8080`, `0.0.0.0:8080` or `[::]:8080`; an empty host means every interface. */
+export function parseListenAddr(raw: string): ListenAddr {
+    const m = /^(?:\[([^\]]+)\]|([^:]*)):(\d+)$/.exec(raw);
+    const port = m ? Number(m[3]) : NaN;
+    if (!m || !Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`Env LISTEN_ADDR must look like :8080 or host:8080 (got ${JSON.stringify(raw)}).`);
+    }
+    const host = m[1] ?? m[2];
+    return host ? { host, port } : { port };
+}
+
+/** A `<purpose>_KEY` secret: base64 (or base64url) of at least 32 bytes. */
+export function isValidKey(value: string): boolean {
+    if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return false;
+    return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64').length >= 32;
 }
 
 function required(name: string): string {
@@ -50,13 +73,6 @@ function optional(name: string): string | undefined {
     return process.env[name] || undefined;
 }
 
-function port(name: string, fallback: number): number {
-    const raw = process.env[name];
-    const val = raw ? Number(raw) : fallback;
-    if (!Number.isInteger(val) || val <= 0 || val > 65535) throw new Error(`Env ${name} must be a port number.`);
-    return val;
-}
-
 export function loadConfig(): Config {
     const useGoogleDriveCheck = process.env.USE_GOOGLE_DRIVE_CHECK === 'true';
 
@@ -64,20 +80,23 @@ export function loadConfig(): Config {
         throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_FILE or GOOGLE_SERVICE_ACCOUNT_KEY_JSON is required when USE_GOOGLE_DRIVE_CHECK=true.');
     }
 
+    // Replaced by the single LISTEN_ADDR; fail loudly instead of silently listening elsewhere.
+    for (const old of ['WEBHOOK_PORT', 'API_PORT']) {
+        if (optional(old)) throw new Error(`Env ${old} is no longer used; set LISTEN_ADDR (e.g. :8080) instead.`);
+    }
+    const http = parseListenAddr(optional('LISTEN_ADDR') ?? ':8080');
+
     const apiKey = optional('API_KEY');
-    const api: Config['api'] = apiKey
-        ? { enabled: true, port: port('API_PORT', 3001), apiKey }
-        : { enabled: false };
+    if (apiKey && !isValidKey(apiKey)) {
+        throw new Error('Env API_KEY must be base64 of at least 32 bytes (e.g. `openssl rand -base64 32`).');
+    }
+    const api: Config['api'] = apiKey ? { enabled: true, apiKey } : { enabled: false };
 
     let webhookRelay: Config['webhookRelay'] = { enabled: false };
     if (process.env.USE_WEBHOOK_RELAY === 'true') {
         const publicBaseUrl = optional('WEBHOOK_PUBLIC_BASE_URL');
         if (!publicBaseUrl) throw new Error('Env WEBHOOK_PUBLIC_BASE_URL is required when USE_WEBHOOK_RELAY=true.');
-        const webhookPort = port('WEBHOOK_PORT', 3000);
-        if (api.enabled && webhookPort === api.port) {
-            throw new Error(`WEBHOOK_PORT and API_PORT must differ (both are ${webhookPort}).`);
-        }
-        webhookRelay = { enabled: true, port: webhookPort, publicBaseUrl };
+        webhookRelay = { enabled: true, publicBaseUrl };
     }
 
     return {
@@ -109,6 +128,11 @@ export function loadConfig(): Config {
             googleDriveAuditChannel: optional('GOOGLE_DRIVE_AUDIT_CHANNEL'),
             googleServiceAccountKeyFile: optional('GOOGLE_SERVICE_ACCOUNT_KEY_FILE'),
             googleServiceAccountKeyJson: optional('GOOGLE_SERVICE_ACCOUNT_KEY_JSON'),
+        },
+        http,
+        build: {
+            version: optional('APP_VERSION') ?? 'dev',
+            commit: optional('APP_COMMIT') ?? 'unknown',
         },
         api,
         webhookRelay,

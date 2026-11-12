@@ -36,11 +36,12 @@ Use `npm run build:watch` to recompile on change during development.
 ### Docker
 
 ```sh
-docker build -t overlooking-bot .
-docker run --env-file .env overlooking-bot
+docker build -t overlooking-bot \
+  --build-arg APP_VERSION=1.0.0 --build-arg APP_COMMIT=$(git rev-parse --short HEAD) .
+docker run --env-file .env -p 8080:8080 overlooking-bot
 ```
 
-If the REST API or webhook relay is on, publish their ports with `-p`. Mount a volume at `SLACK_FILE_SAVE_PREFIX` to keep downloaded files.
+`APP_VERSION` and `APP_COMMIT` are returned as the `X-App-Version` and `X-App-Commit` response headers. Publish the `LISTEN_ADDR` port (`-p`) when the REST API or webhook relay is on. Mount a volume at `SLACK_FILE_SAVE_PREFIX` to keep downloaded files.
 
 ## Configuration
 
@@ -86,39 +87,46 @@ All settings come from environment variables (a `.env` file is loaded). [`.env.e
 
 With neither approved-location variable set, only sharing settings are checked. The service account must be able to read a file to check it; otherwise the report says the file is not accessible or cannot be checked.
 
+### HTTP server
+
+The REST API and the webhook relay share one HTTP server. It starts only when at least one of them is on.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LISTEN_ADDR` | `:8080` | Address to listen on, e.g. `:8080` or `127.0.0.1:8080`. Replaces the old `WEBHOOK_PORT` and `API_PORT`, which now stop the bot at startup if set |
+
 ### REST API
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `API_KEY` | — | Turns the API on; requests must send `Authorization: Bearer <API_KEY>` |
-| `API_PORT` | `3001` | Port the API listens on |
+| `API_KEY` | — | Turns the API on; requests must send `Authorization: Bearer <API_KEY>`. Must be base64 of at least 32 bytes (`openssl rand -base64 32`) |
 
 ### Webhook relay
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `USE_WEBHOOK_RELAY` | `false` | Turn the module on |
-| `WEBHOOK_PUBLIC_BASE_URL` | — | Public HTTPS URL that reaches `WEBHOOK_PORT`, used to show full webhook URLs in the App Home (required when the relay is on) |
-| `WEBHOOK_PORT` | `3000` | Port the relay listens on; must differ from `API_PORT` |
+| `WEBHOOK_PUBLIC_BASE_URL` | — | Public HTTPS URL that reaches `LISTEN_ADDR`, used to show full webhook URLs in the App Home (required when the relay is on) |
 
 ## REST API
 
-All routes live under `/api` and need the bearer token. Lists are sorted newest first and paginated with an `_id` cursor:
-
-- `limit`: page size, default 50, max 200
-- `before`: the `_id` of the last item on the previous page
-
-Responses have the shape `{ data, total, hasMore }`.
+All routes live under `/api/v1` and need the bearer token. The full contract is [`api/openapi.yaml`](api/openapi.yaml) (OpenAPI 3.1), generated from `src/web/schemas.ts`; run `npm run openapi` after changing the schemas (`npm test` fails while the file is stale).
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/messages?collection=` | List messages; `collection` is `messages` (default), `changedMessages` or `deletedMessages` |
-| `GET` | `/api/messages/:id?collection=` | One message |
-| `GET` | `/api/drive/jobs?status=` | List Drive check records; `status` is `pending`, `completed` or `error` |
-| `GET` | `/api/drive/jobs/:id` | One Drive check record |
+| `GET` | `/api/v1/messages?collection=` | List messages; `collection` is `messages` (default), `changed_messages` or `deleted_messages` |
+| `GET` | `/api/v1/messages/:id?collection=` | One message |
+| `GET` | `/api/v1/drive/jobs?status=` | List Drive check records; `status` is `pending`, `completed` or `error` |
+| `GET` | `/api/v1/drive/jobs/:id` | One Drive check record |
+
+Lists are sorted newest first and return `{ items, nextCursor }`. Pass `nextCursor` back as `?cursor=` for the next page; it is `null` on the last page. `limit` defaults to 50 and is clamped to 200.
+
+Message records use camelCase fields (`threadTs`, `messageTs`, `previousText`, …). Each one also carries `slackEvent`, the Slack event exactly as stored, whose fields keep Slack's snake_case names.
+
+Errors look like `{ "error": { "code": "invalid_request", "message": "…", "details": { "fields": { "limit": "…" } } } }`, with codes `invalid_request` (400), `unauthenticated` (401), `not_found` (404) and `internal_error` (500).
 
 ```sh
-curl -H "Authorization: Bearer $API_KEY" "http://localhost:3001/api/messages?limit=10"
+curl -H "Authorization: Bearer $API_KEY" "http://localhost:8080/api/v1/messages?limit=10"
 ```
 
 ## Webhook relay
@@ -169,7 +177,7 @@ src/
 │   └── webhook-relay/
 ├── scripts/          # one-off maintenance scripts
 ├── utils/
-└── web/              # REST API (Express)
+└── web/              # shared HTTP server and REST API (Express); schemas.ts feeds api/openapi.yaml
 ```
 
 ### MongoDB collections
