@@ -1,7 +1,7 @@
 import { App, ignoreSelf, KnownEventFromType, subtype } from "@slack/bolt";
 import { mkdir } from "fs/promises";
 import { Collection } from "mongodb";
-import { downloadFileFromSlack } from "../utils/slack";
+import { downloadFileFromSlack } from "../../utils/slack";
 
 export type SlackStorageModuleOptions = {
     autoJoinChannels: boolean;

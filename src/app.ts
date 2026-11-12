@@ -1,65 +1,40 @@
-import { config } from 'dotenv';
-config();
+import { loadConfig } from './config';
+import { connectDb } from './db';
 import { App } from '@slack/bolt';
-import * as mongoDB from 'mongodb';
-import { getBoltLogLevel } from './utils/slack';
-import { SlackStorageModule } from './slack-storage';
-import { AppHomeModule } from './app-home';
-
-import 'dotenv/config'
-import { ReactionCheckModule } from './reaction-check';
-import { GoogleDriveCheckModule } from './google-drive-check';
 import { google } from 'googleapis';
-import { WebhookRelayModule } from './webhook-relay';
-import { WebhookDoc } from './webhook-relay/store';
-
-const app = new App({
-    token: process.env.SLACK_BOT_TOKEN,
-    signingSecret: process.env.SLACK_SIGNING_SECRET,
-    appToken: process.env.SLACK_APP_TOKEN,
-    logLevel: getBoltLogLevel(process.env.LOG_LEVEL),
-    socketMode: true,
-    ignoreSelf: false,
-});
-
-app.use(async ({ next }) => {
-    await next!();
-});
+import { SlackStorageModule } from './modules/slack-storage';
+import { AppHomeModule } from './modules/app-home';
+import { ReactionCheckModule } from './modules/reaction-check';
+import { GoogleDriveCheckModule } from './modules/google-drive/handler';
+import { startHttpServer } from './web/server';
+import { WebhookRelayModule } from './modules/webhook-relay';
 
 (async () => {
+    const config = loadConfig();
 
-    if (!process.env.DB_CONN_STRING) throw new Error('Env DB_CONN_STRING is required.');
-    const client = new mongoDB.MongoClient(process.env.DB_CONN_STRING);
-    await client.connect();
+    const { client: dbClient, collections } = await connectDb(config.db.connString);
 
-    const msgCollection = client.db().collection('messages');
-    const changedMsgCollection = client.db().collection('changedMessages');
-    const deletedMsgCollection = client.db().collection('deletedMessages');
-    const driveJobCollection = client.db().collection('driveComplianceJobs');
+    const app = new App({
+        token: config.slack.botToken,
+        signingSecret: config.slack.signingSecret,
+        appToken: config.slack.appToken,
+        logLevel: config.slack.logLevel,
+        socketMode: true,
+        ignoreSelf: false,
+    });
 
-    const fileSavePrefix = process.env.SLACK_FILE_SAVE_PREFIX;
-    if (!fileSavePrefix) throw new Error('Env SLACK_FILE_SAVE_PREFIX is required.');
+    app.use(async ({ next }) => { await next!(); });
 
-    const slackUserToken = process.env.SLACK_USER_TOKEN
-    if (!slackUserToken) throw new Error('Env SLACK_USER_TOKEN is required.');
-
-    const useReactionCheck = process.env.USE_REACTION_CHECK === 'true';
-
-    // Start your app
     await app.start();
-
-    const autoJoinChannels = process.env.AUTO_JOIN_CHANNELS === 'true';
 
     const slackStorageModule = new SlackStorageModule(
         app,
-        msgCollection,
-        changedMsgCollection,
-        deletedMsgCollection,
-        fileSavePrefix,
-        slackUserToken,
-        {
-            autoJoinChannels,
-        }
+        collections.messages,
+        collections.changedMessages,
+        collections.deletedMessages,
+        config.app.fileSavePrefix,
+        config.slack.userToken,
+        { autoJoinChannels: config.app.autoJoinChannels },
     );
     await slackStorageModule.init();
 
@@ -67,43 +42,25 @@ app.use(async ({ next }) => {
     await appHomeModule.init();
 
     let webhookRelayModule: WebhookRelayModule | undefined;
-    if (process.env.USE_WEBHOOK_RELAY === 'true') {
-        const botToken = process.env.SLACK_BOT_TOKEN;
-        if (!botToken) throw new Error('Env SLACK_BOT_TOKEN is required.');
-        const publicBaseUrl = process.env.WEBHOOK_PUBLIC_BASE_URL;
-        if (!publicBaseUrl) throw new Error('Env WEBHOOK_PUBLIC_BASE_URL is required when USE_WEBHOOK_RELAY=true.');
-        const port = Number(process.env.WEBHOOK_PORT ?? 3000);
-        if (!Number.isInteger(port) || port <= 0) throw new Error('Env WEBHOOK_PORT must be a port number.');
-
+    if (config.webhookRelay.enabled) {
         webhookRelayModule = new WebhookRelayModule(
-            client.db().collection<WebhookDoc>('webhooks'),
-            msgCollection,
-            { botToken, port, publicBaseUrl },
+            collections.webhooks,
+            collections.messages,
+            { botToken: config.slack.botToken, publicBaseUrl: config.webhookRelay.publicBaseUrl },
         );
         await webhookRelayModule.init(app, appHomeModule);
-        console.log(`Webhook relay listening on port ${port}`);
     }
 
-    if (useReactionCheck) {
-        let ignoredUsers: string[] = [];
-        if (process.env.REACTION_USER_IGN_LIST) {
-            ignoredUsers = process.env.REACTION_USER_IGN_LIST.split(',');
-        }
-
-        const reactionCheckModule = new ReactionCheckModule(app, ignoredUsers);
+    if (config.features.useReactionCheck) {
+        const reactionCheckModule = new ReactionCheckModule(app, config.features.reactionUserIgnoreList);
         await reactionCheckModule.init();
     }
 
-    const useGoogleDriveCheck = process.env.USE_GOOGLE_DRIVE_CHECK === 'true';
-    if (useGoogleDriveCheck) {
-        if (!process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE && !process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON) {
-            throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_FILE or GOOGLE_SERVICE_ACCOUNT_KEY_JSON is required when USE_GOOGLE_DRIVE_CHECK=true.');
-        }
-
+    if (config.features.useGoogleDriveCheck) {
         const auth = new google.auth.GoogleAuth({
-            keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE,
-            credentials: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON
-                ? JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON)
+            keyFile: config.features.googleServiceAccountKeyFile,
+            credentials: config.features.googleServiceAccountKeyJson
+                ? JSON.parse(config.features.googleServiceAccountKeyJson)
                 : undefined,
             scopes: ['https://www.googleapis.com/auth/drive.readonly'],
         });
@@ -112,26 +69,39 @@ app.use(async ({ next }) => {
         const gdCheckModule = new GoogleDriveCheckModule(
             app,
             driveClient,
-            driveJobCollection,
+            collections.driveComplianceJobs,
             {
-                allowedSharedDriveIds: (process.env.GOOGLE_DRIVE_ALLOWED_SHARED_DRIVE_IDS || '').split(',').filter(Boolean),
-                allowedFolderIds: (process.env.GOOGLE_DRIVE_ALLOWED_FOLDER_IDS || '').split(',').filter(Boolean),
-                allowDomainSharing: process.env.GOOGLE_DRIVE_ALLOW_DOMAIN_SHARING === 'true',
-                maxParentTraversalDepth: 10,
+                allowedSharedDriveIds: config.features.googleDriveAllowedSharedDriveIds,
+                allowedFolderIds: config.features.googleDriveAllowedFolderIds,
+                allowDomainSharing: config.features.googleDriveAllowDomainSharing,
+                maxParentTraversalDepth: config.features.googleDriveMaxParentTraversalDepth,
             },
-            process.env.GOOGLE_DRIVE_REPORT_ONLY_VIOLATIONS !== 'false',
-            process.env.GOOGLE_DRIVE_AUDIT_CHANNEL || undefined,
+            config.features.googleDriveReportOnlyViolations,
+            config.features.googleDriveAuditChannel,
         );
         await gdCheckModule.init();
+    }
+
+    // One HTTP server on LISTEN_ADDR for the REST API and the webhook relay; none when both are off.
+    const httpServer = config.api.enabled || webhookRelayModule
+        ? await startHttpServer(config.http, {
+            build: config.build,
+            api: config.api.enabled ? { apiKey: config.api.apiKey, collections } : undefined,
+            webhook: webhookRelayModule?.httpHandler,
+        })
+        : undefined;
+    if (httpServer) {
+        const parts = [config.api.enabled && 'REST API (/api/v1)', webhookRelayModule && 'webhook relay (/services)'].filter(Boolean);
+        console.log(`HTTP server listening on ${config.http.host ?? ''}:${config.http.port}: ${parts.join(', ')}`);
     }
 
     console.log('⚡️ Bolt app is running!');
 
     const shutdown = async () => {
         console.log('Shutting down...');
-        await webhookRelayModule?.stop();
+        await new Promise<void>((resolve) => (httpServer ? httpServer.close(() => resolve()) : resolve()));
         await app.stop();
-        await client.close();
+        await dbClient.close();
         process.exit(0);
     };
 
