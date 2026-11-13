@@ -5,7 +5,8 @@ import { acquireReportLock, LOCK_TTL_MS, releaseReportLock } from './lock';
 /**
  * In-memory stand-in supporting just the operators the lock uses. updateMany yields between
  * documents (each doc is still checked and updated atomically) so concurrent callers interleave,
- * like they can against a real server; `failAfter` makes it throw after that many updates.
+ * like they can against a real server (every other call walks the docs in reverse, so two callers
+ * can each win half of a report); `failAfter` makes it throw after that many updates.
  */
 function fakeJobs(docs: Record<string, any>[], { failAfter }: { failAfter?: number } = {}) {
     const matches = (d: Record<string, any>, q: Record<string, any>): boolean => Object.entries(q).every(([k, v]) => {
@@ -15,12 +16,15 @@ function fakeJobs(docs: Record<string, any>[], { failAfter }: { failAfter?: numb
         return d[k] === v;
     });
     let failBudget = failAfter;
+    let calls = 0;
     return {
         docs,
         async countDocuments(q: any) { return docs.filter(d => matches(d, q)).length; },
         async updateMany(q: any, u: any) {
             let modified = 0;
-            for (const d of docs) {
+            // Alternate calls walk the docs in opposite directions so ownership can split.
+            const order = calls++ % 2 === 0 ? [...docs] : [...docs].reverse();
+            for (const d of order) {
                 await new Promise(resolve => setImmediate(resolve));
                 if (!matches(d, q)) continue;
                 if (u.$set && failBudget !== undefined) {
@@ -82,15 +86,19 @@ test('an unknown report is missing', async () => {
     assert.equal(await acquireReportLock(fakeJobs([]), filter, 'a'), 'missing');
 });
 
-test('concurrent callers: at most one acquires and nothing stays locked after releases', async () => {
+test('concurrent callers: never more than one acquires, splits leave everyone busy, nothing stays locked', async () => {
+    let splits = 0;
     for (let round = 0; round < 5; round++) {
         const col = fakeJobs([...report(), { channel: 'C', thread_ts: '1' }]);
-        const tokens = ['a', 'b', 'c'];
+        const tokens = ['a', 'b'];
         const results = await Promise.all(tokens.map(t => acquireReportLock(col, filter, t)));
-        assert.ok(results.filter(r => r === 'acquired').length <= 1);
+        const acquired = results.filter(r => r === 'acquired').length;
+        assert.ok(acquired <= 1);
+        if (acquired === 0) splits++;
         await Promise.all(tokens.map((t, i) => results[i] === 'acquired' ? releaseReportLock(col, filter, t) : undefined));
         assert.ok(col.docs.every((d: any) => !('recheckingAt' in d) && !('recheckingToken' in d)));
     }
+    assert.ok(splits > 0, 'expected at least one round where ownership split and both callers backed off');
 });
 
 test('updateMany failing mid-way releases the partial lock and rethrows', async () => {
