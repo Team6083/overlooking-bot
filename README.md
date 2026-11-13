@@ -85,13 +85,13 @@ All settings come from environment variables (a `.env` file is loaded). [`.env.e
 | `GOOGLE_DRIVE_ALLOW_DOMAIN_SHARING` | `false` | Allow "anyone in the organization" sharing |
 | `GOOGLE_DRIVE_REPORT_ONLY_VIOLATIONS` | `true` | Send nothing when every link is compliant |
 | `GOOGLE_DRIVE_AUDIT_CHANNEL` | — | Channel ID that also receives each report; turns on rechecks and the App Home overview |
-| `GOOGLE_DRIVE_RECHECK_ALLOWED` | `everyone` | Who may recheck: `everyone`, or `admins` (workspace owners and admins). Anything else fails at startup |
+| `GOOGLE_DRIVE_RECHECK_ALLOWED` | `everyone` | Who may recheck and mark files handled: `everyone`, `admins` (workspace owners and admins), or `owners` (workspace owners only). Anything else fails at startup |
 
 #### Rechecking
 
 When `GOOGLE_DRIVE_AUDIT_CHANNEL` is set, each audit report has a "重新檢查" button. The poster's ephemeral message is unchanged and is never notified about rechecks. The audit message itself is never edited:
 
-- It carries one status reaction for the latest overall state: `warning` (any violation), `grey_question` (no violation, but some file could not be checked or accessed), `white_check_mark` (all compliant). `hourglass_flowing_sand` shows while a recheck runs.
+- It carries one status reaction for the latest overall state: `warning` (any violation), `question` (no violation, but some file could not be checked or accessed), `white_check_mark` (all compliant). `hourglass_flowing_sand` shows while a recheck runs.
 - Each recheck posts a reply in the audit message's thread with every file's status, what changed since the previous check, who triggered it, the check time and another recheck button. A file whose recheck fails (Drive says it is not accessible or cannot be checked, or the check throws) keeps its stored result, `resolvedAt`, `lastCheckedAt` and job `status`: the reply shows "❗ 複查失敗，保留上次結果" for it, and only a history entry marked `failed: true` (with `errorMessage` when known) is added; `checkCount` is not bumped. Other files in the same report are updated normally. If every file fails, the reply says nothing was changed, and the reaction goes back to what it was before the hourglass. The same applies if the whole recheck throws.
 - If the audit message was deleted, the person who clicked gets a private notice instead.
 - Two rechecks of the same report cannot run at once: a report is locked all-or-nothing (a lock older than 2 minutes is ignored), and the second clicker is told to wait.

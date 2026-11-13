@@ -3,7 +3,7 @@ config();
 
 import { getBoltLogLevel } from './utils/slack';
 
-export type RecheckAllowed = 'everyone' | 'admins';
+export type RecheckAllowed = 'everyone' | 'admins' | 'owners';
 
 export interface Config {
     slack: {
@@ -69,8 +69,8 @@ export function isValidKey(value: string): boolean {
 /** GOOGLE_DRIVE_RECHECK_ALLOWED: who may recheck Drive reports; defaults to everyone. */
 export function parseRecheckAllowed(raw: string | undefined): RecheckAllowed {
     if (!raw) return 'everyone';
-    if (raw === 'everyone' || raw === 'admins') return raw;
-    throw new Error(`Env GOOGLE_DRIVE_RECHECK_ALLOWED must be "everyone" or "admins" (got ${JSON.stringify(raw)}).`);
+    if (raw === 'everyone' || raw === 'admins' || raw === 'owners') return raw;
+    throw new Error(`Env GOOGLE_DRIVE_RECHECK_ALLOWED must be "everyone", "admins" or "owners" (got ${JSON.stringify(raw)}).`);
 }
 
 function required(name: string): string {

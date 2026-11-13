@@ -94,7 +94,7 @@ export class GoogleDriveRecheckModule {
             try {
                 // The authoritative permission check; slower than Slack's 3 s ack window, so it follows the ack.
                 if (!(await this.isAllowed(client, userId))) {
-                    await this.tell(client, userId, meta.channel, '只有工作區管理員可以標記已處理。');
+                    await this.tell(client, userId, meta.channel, `只有${this.allowedWho()}可以標記已處理。`);
                     return;
                 }
                 const message = await this.markHandled(client, meta.jobId, userId, note, logger);
@@ -118,7 +118,13 @@ export class GoogleDriveRecheckModule {
     private async isAllowed(client: WebClient, userId: string): Promise<boolean> {
         if (this.allowed === 'everyone') return true;
         const res = await client.users.info({ user: userId });
-        return !!(res.user?.is_admin || res.user?.is_owner || res.user?.is_primary_owner);
+        const owner = !!(res.user?.is_owner || res.user?.is_primary_owner);
+        return this.allowed === 'owners' ? owner : owner || !!res.user?.is_admin;
+    }
+
+    /** Who may act, for the denial message. */
+    private allowedWho(): string {
+        return this.allowed === 'owners' ? '工作區擁有者' : '工作區管理員';
     }
 
     /** Tell the clicker something privately: ephemeral where they clicked, else a DM. */
@@ -144,7 +150,7 @@ export class GoogleDriveRecheckModule {
                 return;
             }
             if (!(await this.isAllowed(client, userId))) {
-                await this.tell(client, userId, clickChannel, '只有工作區管理員可以重新檢查。');
+                await this.tell(client, userId, clickChannel, `只有${this.allowedWho()}可以重新檢查。`);
                 return;
             }
             const message = await this.recheck(client, report.channel, report.ts, userId, logger);
@@ -174,7 +180,7 @@ export class GoogleDriveRecheckModule {
                 ObjectId.isValid(jobId) ? this.jobCollection.findOne({ _id: new ObjectId(jobId) }) : null,
             ]);
             if (!allowed) {
-                await this.tell(client, userId, channel, '只有工作區管理員可以標記已處理。');
+                await this.tell(client, userId, channel, `只有${this.allowedWho()}可以標記已處理。`);
                 return;
             }
             if (!job) {
