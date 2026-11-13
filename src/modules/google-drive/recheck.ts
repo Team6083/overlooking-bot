@@ -12,11 +12,13 @@ import { markJobHandled } from './store';
 import { checkDriveCompliance } from './checker';
 import {
     CHECKING_REACTION,
+    markSurvivesRecheck,
     OPEN_JOB_FILTER,
     overallStatusOfJobs,
     runRecheckStep,
     isMessageGoneError,
     JobState,
+    OverallStatus,
     RecheckJob,
     reactionForStatus,
 } from './recheck-core';
@@ -165,9 +167,16 @@ export class GoogleDriveRecheckModule {
         const userId: string = body.user.id;
         const channel: string | undefined = body.channel?.id ?? body.container?.channel_id;
         try {
-            // Keep the work before views.open to one quick lookup (trigger_id expires fast). The
-            // permission and open-state checks that matter happen again on submit.
-            const job = ObjectId.isValid(jobId) ? await this.jobCollection.findOne({ _id: new ObjectId(jobId) }) : null;
+            // Permission and lookup run concurrently so views.open still lands inside the trigger_id
+            // window; both are checked again on submit.
+            const [allowed, job] = await Promise.all([
+                this.isAllowed(client, userId),
+                ObjectId.isValid(jobId) ? this.jobCollection.findOne({ _id: new ObjectId(jobId) }) : null,
+            ]);
+            if (!allowed) {
+                await this.tell(client, userId, channel, '只有工作區管理員可以標記已處理。');
+                return;
+            }
             if (!job) {
                 await this.tell(client, userId, channel, '找不到這個項目的紀錄。');
                 return;
@@ -231,11 +240,9 @@ export class GoogleDriveRecheckModule {
         try {
             const siblings = await this.jobCollection
                 .find({ channel: job.channel, thread_ts: job.thread_ts, auditMessage: { $exists: true } }).toArray();
-            // While a recheck runs it owns the reaction and restores it from its own view of the report.
-            const busy = siblings.some(j => j.recheckingToken && j.recheckingAt instanceof Date && j.recheckingAt.getTime() > Date.now() - LOCK_TTL_MS);
-            if (!busy) {
-                await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overallStatusOfJobs(siblings as unknown as JobState[])));
-            }
+            // Always set it, even while a recheck runs: the recheck re-syncs after releasing its lock,
+            // so whichever finishes last leaves the reaction matching the stored state.
+            await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overallStatusOfJobs(siblings as unknown as JobState[])));
         } catch (err) {
             if (isMessageGoneError(err)) return gone;
             logger.error('Failed to update the status reaction after marking handled', err);
@@ -254,10 +261,12 @@ export class GoogleDriveRecheckModule {
         if (lock === 'missing') return '找不到這份報告的紀錄。';
         if (lock === 'busy') return '這份報告正在重新檢查中，請稍候再試。';
 
+        let syncAudit: { channel: string; ts: string } | undefined;
         try {
             const jobs = await this.jobCollection.find({ ...reportFilter, recheckingToken: token }).sort({ _id: 1 }).toArray();
             const audit = jobs[0]?.auditMessage as { channel: string; ts: string } | undefined;
             if (!audit) return '找不到這份報告的稽核訊息。';
+            syncAudit = audit;
             const recheckValue = encodeRecheckValue(channel, ts);
             const previousOverall = overallStatusOfJobs(jobs as unknown as JobState[]);
             const gone = '原本的稽核訊息已不存在，無法重新檢查。';
@@ -278,12 +287,17 @@ export class GoogleDriveRecheckModule {
                     checkedAt,
                 );
                 const { results } = step;
-                await Promise.all(jobs.map((job, i) => {
+                // Take each job's manualResolution as it was just before the update, so a mark made
+                // after the snapshot is still reported when this recheck clears it.
+                const hadMark = await Promise.all(jobs.map(async (job, i) => {
                     const { $set, $unset, $push } = step.updates[i];
-                    return this.jobCollection.updateOne(
+                    const res: any = await this.jobCollection.findOneAndUpdate(
                         { _id: job._id },
                         { ...($set ? { $set } : {}), ...($unset ? { $unset } : {}), $push } as any,
+                        { returnDocument: 'before' },
                     );
+                    const before = res && 'value' in res ? res.value : res;
+                    return !!before?.manualResolution;
                 }));
 
                 await client.chat.postMessage({
@@ -295,8 +309,8 @@ export class GoogleDriveRecheckModule {
                             result,
                             previous: jobs[i].result as ComplianceResult | undefined,
                             jobId: String(jobs[i]._id),
-                            hadManualResolution: !!jobs[i].manualResolution,
-                            handled: step.handledAfter[i],
+                            hadManualResolution: hadMark[i],
+                            handled: markSurvivesRecheck(hadMark[i], result),
                         })),
                         { triggeredBy: userId, checkedAt, recheckValue },
                     ),
@@ -318,22 +332,34 @@ export class GoogleDriveRecheckModule {
                     logger.error('Failed to post the Drive recheck failure notice', replyErr);
                 }
             } finally {
-                try {
-                    // Read the report fresh: a mark made while the recheck ran must count too.
-                    let overall = previousOverall;
-                    try {
-                        overall = overallStatusOfJobs(await this.jobCollection.find(reportFilter).toArray() as unknown as JobState[]);
-                    } catch (err) {
-                        logger.error('Failed to re-read the report for its status reaction', err);
-                    }
-                    await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overall));
-                } catch (err) {
-                    if (!isMessageGoneError(err)) logger.error('Failed to restore the audit status reaction', err);
-                }
+                await this.syncReaction(client, audit, reportFilter, previousOverall, logger);
             }
             return undefined;
         } finally {
             await releaseReportLock(this.jobCollection, reportFilter, token);
+            // A mark committed after the sync above but before the lock was released is only seen now.
+            if (syncAudit) await this.syncReaction(client, syncAudit, reportFilter, undefined, logger);
+        }
+    }
+
+    /** Sets the audit message's status reaction from the report's stored state, read fresh. */
+    private async syncReaction(
+        client: WebClient,
+        audit: { channel: string; ts: string },
+        reportFilter: Record<string, unknown>,
+        fallback: OverallStatus | undefined,
+        logger: Logger,
+    ) {
+        try {
+            let overall = fallback;
+            try {
+                overall = overallStatusOfJobs(await this.jobCollection.find(reportFilter).toArray() as unknown as JobState[]);
+            } catch (err) {
+                logger.error('Failed to re-read the report for its status reaction', err);
+            }
+            if (overall) await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overall));
+        } catch (err) {
+            if (!isMessageGoneError(err)) logger.error('Failed to set the audit status reaction', err);
         }
     }
 

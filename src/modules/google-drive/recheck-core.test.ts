@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CLOSED_JOB_FILTER, OPEN_JOB_FILTER, clearsManualResolution, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, effectiveResult, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
+import { markSurvivesRecheck, CLOSED_JOB_FILTER, OPEN_JOB_FILTER, clearsManualResolution, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, effectiveResult, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
 import type { ComplianceResult } from './types';
 
 const res = (status: ComplianceResult['status'], violations: ComplianceResult['violations'] = []): ComplianceResult =>
@@ -176,4 +176,11 @@ test('open and closed job filters are complements', () => {
     assert.deepEqual(OPEN_JOB_FILTER['result.status'], { $exists: true, $ne: 'compliant' });
     assert.deepEqual(OPEN_JOB_FILTER.manualResolution, { $exists: false });
     assert.equal(CLOSED_JOB_FILTER.$or.length, 3);
+});
+
+test('markSurvivesRecheck: only violations void an existing mark', () => {
+    assert.equal(markSurvivesRecheck(true, bad), false);
+    assert.equal(markSurvivesRecheck(true, res('compliant')), true);
+    assert.equal(markSurvivesRecheck(true, res('not_accessible')), true);
+    assert.equal(markSurvivesRecheck(false, bad), false);
 });

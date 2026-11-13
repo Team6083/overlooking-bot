@@ -96,6 +96,11 @@ export function jobStatusFor(result: ComplianceResult): 'completed' | 'error' {
     return result.status === 'not_accessible' || result.status === 'cannot_check' ? 'error' : 'completed';
 }
 
+/** Whether a "handled" mark that existed when a file was rechecked is still in place afterwards. */
+export function markSurvivesRecheck(hadMark: boolean, result: ComplianceResult): boolean {
+    return hadMark && result.status !== 'violations';
+}
+
 /** Open items: the latest result exists and is not compliant, and nobody marked it handled. */
 export const OPEN_JOB_FILTER = {
     'result.status': { $exists: true, $ne: 'compliant' },
@@ -230,7 +235,7 @@ export async function runRecheckStep(
         results,
         updates: jobs.map((job, i) => computeRecheckUpdate(job, results[i], checkedBy, checkedAt)),
         failed: jobs.map((job, i) => isRecheckFailure(job.result, results[i])),
-        handledAfter: jobs.map((job, i) => !!job.manualResolution && !clearsManualResolution(job, results[i])),
+        handledAfter: jobs.map((job, i) => markSurvivesRecheck(!!job.manualResolution, results[i])),
     };
 }
 
