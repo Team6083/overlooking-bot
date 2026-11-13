@@ -2,6 +2,20 @@ import type { KnownBlock } from '@slack/types';
 import type { ComplianceResult } from './types';
 import { diffResult } from './recheck-core';
 
+/** Slack allows 50 blocks per message; a file takes two (divider + section), so cap the files shown. */
+export const MAX_FILES_SHOWN = 20;
+const MAX_SECTION_CHARS = 3000;
+
+function clampSection(text: string): string {
+    return text.length <= MAX_SECTION_CHARS ? text : `${text.slice(0, MAX_SECTION_CHARS - 1)}…`;
+}
+
+function moreFilesBlock(hidden: number): KnownBlock | undefined {
+    return hidden > 0
+        ? { type: 'context', elements: [{ type: 'mrkdwn', text: `…另有 ${hidden} 個檔案未顯示` }] }
+        : undefined;
+}
+
 export const RECHECK_ACTION_ID = 'drive_recheck';
 
 export const STATUS_EMOJI: Record<string, string> = {
@@ -97,13 +111,15 @@ export function buildComplianceBlocks(
             text: { type: 'mrkdwn', text: headerText },
         },
     ];
-    for (const result of results) {
+    for (const result of results.slice(0, MAX_FILES_SHOWN)) {
         blocks.push({ type: 'divider' });
         blocks.push({
             type: 'section',
-            text: { type: 'mrkdwn', text: buildFileSection(result) },
+            text: { type: 'mrkdwn', text: clampSection(buildFileSection(result)) },
         });
     }
+    const more = moreFilesBlock(results.length - MAX_FILES_SHOWN);
+    if (more) blocks.push(more);
     if (auditContext?.recheckValue) {
         blocks.push({ type: 'actions', elements: [recheckButton(auditContext.recheckValue)] });
     }
@@ -124,13 +140,15 @@ export function buildRecheckReplyBlocks(
             elements: [{ type: 'mrkdwn', text: `由 <@${info.triggeredBy}> 觸發 · 檢查時間 ${slackDate(info.checkedAt)}` }],
         },
     ];
-    for (const { result, previous } of entries) {
+    for (const { result, previous } of entries.slice(0, MAX_FILES_SHOWN)) {
         blocks.push({ type: 'divider' });
         blocks.push({
             type: 'section',
-            text: { type: 'mrkdwn', text: `${buildFileSection(result)}\n*變化：* ${diffResult(previous, result).text}` },
+            text: { type: 'mrkdwn', text: clampSection(`${buildFileSection(result)}\n*變化：* ${diffResult(previous, result).text}`) },
         });
     }
+    const more = moreFilesBlock(entries.length - MAX_FILES_SHOWN);
+    if (more) blocks.push(more);
     blocks.push({ type: 'actions', elements: [recheckButton(info.recheckValue)] });
     return blocks;
 }

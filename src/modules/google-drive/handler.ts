@@ -3,7 +3,7 @@ import { drive_v3 } from 'googleapis';
 import { Collection } from 'mongodb';
 import { checkDriveCompliance, ComplianceCheckerOptions } from './checker';
 import { computeJobUpdate, overallStatus, reactionForStatus } from './recheck-core';
-import { setStatusReaction } from './recheck';
+import { addStatusReaction } from './slack';
 import { buildComplianceBlocks, encodeRecheckValue } from './report';
 
 const DRIVE_LINK_PATTERNS = [
@@ -112,7 +112,7 @@ export class GoogleDriveCheckModule {
                         { $set: { auditMessage: { channel: auditChannel, ts: audit.ts } } }
                     );
                     try {
-                        await setStatusReaction(client, auditChannel, audit.ts, reactionForStatus(overallStatus(results)));
+                        await addStatusReaction(client, auditChannel, audit.ts, reactionForStatus(overallStatus(results)));
                     } catch (err) {
                         logger.error('Failed to add the status reaction to the audit message', err);
                     }

@@ -117,7 +117,7 @@ export const DriveJob = z.object({
     status: z.enum(DRIVE_JOB_STATUSES),
     requestedAt: z.iso.datetime(),
     completedAt: z.iso.datetime().optional(),
-    result: ComplianceResult.optional().openapi({ description: 'The latest check result.' }),
+    result: ComplianceResult.optional(),
     user: z.string().optional().openapi({ description: 'Slack user id of whoever posted the link.' }),
     auditMessage: z.object({ channel: z.string(), ts: z.string() }).optional()
         .openapi({ description: 'The audit channel message that reported this check.' }),

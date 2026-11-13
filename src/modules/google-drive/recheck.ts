@@ -1,6 +1,8 @@
 import { App } from '@slack/bolt';
 import type { KnownBlock } from '@slack/types';
 import type { WebClient } from '@slack/web-api';
+import { acquireReportLock, releaseReportLock } from './lock';
+import { setStatusReaction } from './slack';
 import { randomUUID } from 'node:crypto';
 import { drive_v3 } from 'googleapis';
 import { Collection } from 'mongodb';
@@ -9,13 +11,10 @@ import { checkDriveCompliance } from './checker';
 import {
     CHECKING_REACTION,
     computeJobUpdate,
-    isIgnorableReactionError,
     isMessageGoneError,
     JobState,
     overallStatus,
     reactionForStatus,
-    STATUS_REACTIONS,
-    StatusReaction,
 } from './recheck-core';
 import {
     buildRecheckFailedBlocks,
@@ -34,31 +33,14 @@ import type { ComplianceCheckerOptions, ComplianceResult } from './types';
 import type { RecheckAllowed } from '../../config';
 
 const HOME_ACTION_PREFIX = 'drive_recheck_home';
-const LOCK_TTL_MS = 2 * 60 * 1000;
+const PERMALINK_CACHE_MAX = 200;
 const HOME_MAX_ROWS = 20; // one block per row keeps the home well under Slack's 100-block limit
-
-/** Makes `reaction` the only bot status reaction on the message. */
-export async function setStatusReaction(client: WebClient, channel: string, ts: string, reaction: StatusReaction) {
-    for (const name of STATUS_REACTIONS) {
-        if (name === reaction) continue;
-        try {
-            await client.reactions.remove({ channel, timestamp: ts, name });
-        } catch (err) {
-            if (!isIgnorableReactionError(err)) throw err;
-        }
-    }
-    try {
-        await client.reactions.add({ channel, timestamp: ts, name: reaction });
-    } catch (err) {
-        if (!isIgnorableReactionError(err)) throw err;
-    }
-}
 
 type Logger = { error: (msg: string, ...args: any[]) => void; debug?: (msg: string, ...args: any[]) => void };
 
 /** Rechecks audit reports on demand, from the audit message's button or from the App Home overview. */
 export class GoogleDriveRecheckModule {
-    private permalinks = new Map<string, string | undefined>();
+    private permalinks = new Map<string, string>();
 
     constructor(
         private app: App,
@@ -137,22 +119,9 @@ export class GoogleDriveRecheckModule {
     private async recheck(client: WebClient, channel: string, ts: string, userId: string, logger: Logger): Promise<string | undefined> {
         const reportFilter = { channel, thread_ts: ts, auditMessage: { $exists: true } };
         const token = randomUUID();
-        const now = new Date();
-        const locked = await this.jobCollection.updateMany(
-            {
-                ...reportFilter,
-                $or: [
-                    { recheckingAt: { $exists: false } },
-                    { recheckingAt: null },
-                    { recheckingAt: { $lt: new Date(now.getTime() - LOCK_TTL_MS) } },
-                ],
-            },
-            { $set: { recheckingAt: now, recheckingToken: token } },
-        );
-        if (locked.modifiedCount === 0) {
-            const exists = await this.jobCollection.countDocuments(reportFilter);
-            return exists === 0 ? '找不到這份報告的紀錄。' : '這份報告正在重新檢查中，請稍候再試。';
-        }
+        const lock = await acquireReportLock(this.jobCollection, reportFilter, token);
+        if (lock === 'missing') return '找不到這份報告的紀錄。';
+        if (lock === 'busy') return '這份報告正在重新檢查中，請稍候再試。';
 
         try {
             const jobs = await this.jobCollection.find({ ...reportFilter, recheckingToken: token }).sort({ _id: 1 }).toArray();
@@ -218,24 +187,24 @@ export class GoogleDriveRecheckModule {
             }
             return undefined;
         } finally {
-            await this.jobCollection.updateMany(
-                { channel, thread_ts: ts, recheckingToken: token },
-                { $unset: { recheckingAt: '', recheckingToken: '' } },
-            );
+            await releaseReportLock(this.jobCollection, reportFilter, token);
         }
     }
 
     private async permalink(client: WebClient, channel: string, ts: string): Promise<string | undefined> {
         const key = `${channel}:${ts}`;
-        if (this.permalinks.has(key)) return this.permalinks.get(key);
-        let link: string | undefined;
+        const cached = this.permalinks.get(key);
+        if (cached) return cached;
         try {
-            link = (await client.chat.getPermalink({ channel, message_ts: ts })).permalink;
+            const link = (await client.chat.getPermalink({ channel, message_ts: ts })).permalink;
+            if (link) {
+                if (this.permalinks.size >= PERMALINK_CACHE_MAX) this.permalinks.clear();
+                this.permalinks.set(key, link);
+            }
+            return link;
         } catch {
-            link = undefined;
+            return undefined; // failures are not cached
         }
-        this.permalinks.set(key, link);
-        return link;
     }
 
     /** App Home overview of files whose latest check is not compliant. */

@@ -94,7 +94,7 @@ When `GOOGLE_DRIVE_AUDIT_CHANNEL` is set, each audit report has a "重新檢查"
 - It carries one status reaction for the latest overall state: `warning` (any violation), `grey_question` (no violation, but some file could not be checked or accessed), `white_check_mark` (all compliant). `hourglass_flowing_sand` shows while a recheck runs.
 - Each recheck posts a reply in the audit message's thread with every file's status, what changed since the previous check, who triggered it, the check time and another recheck button. If the recheck itself fails, the reply says so and the previous reaction and result stay.
 - If the audit message was deleted, the person who clicked gets a private notice instead.
-- Two rechecks of the same report cannot run at once; the second clicker is told to wait.
+- Two rechecks of the same report cannot run at once: a report is locked all-or-nothing (a lock older than 2 minutes is ignored), and the second clicker is told to wait.
 
 The App Home lists files whose latest result is not compliant (newest first, up to 20) with a link to the audit message and a recheck button, for everyone who is allowed to recheck. Rechecks are manual; nothing runs on a schedule.
 
