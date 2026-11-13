@@ -106,6 +106,8 @@ const DriveCheckHistoryEntry = z.object({
     checkedBy: z.string().openapi({ description: 'Slack user id of whoever triggered the check, or `system` for the initial check.' }),
     status: z.enum(COMPLIANCE_STATUSES),
     violations: z.array(ComplianceViolation),
+    failed: z.boolean().optional().openapi({ description: 'True for a recheck that could not be completed; it did not change the stored result.' }),
+    errorMessage: z.string().optional().openapi({ description: 'For a failed recheck: why.' }),
 }).openapi('DriveCheckHistoryEntry');
 
 export const DriveJob = z.object({

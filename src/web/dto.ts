@@ -91,6 +91,8 @@ export function toDriveJob(doc: Doc): z.infer<typeof DriveJob> {
                 checkedBy: String(h.checkedBy),
                 status: h.status,
                 violations: h.violations ?? [],
+                failed: h.failed === true ? true : undefined,
+                errorMessage: str(h.errorMessage),
             }))
             : undefined,
         resolvedAt: iso(doc.resolvedAt),

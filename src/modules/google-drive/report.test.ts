@@ -77,3 +77,19 @@ test('reply truncation prefers non-compliant, then changed, over unchanged compl
     assert.ok(text.indexOf('FIXED') < text.indexOf('same0'));
     assert.ok(!text.includes('same24'));
 });
+
+test('failed recheck of a file is shown as kept, not as a status change', () => {
+    const na: ComplianceResult = { ...bad, status: 'not_accessible', violations: [] };
+    const info = { triggeredBy: 'U1', checkedAt: new Date(), recheckValue: 'C|1' };
+    const mixed = JSON.stringify(buildRecheckReplyBlocks([
+        { result: ok, previous: bad },
+        { result: na, previous: bad },
+    ], info));
+    assert.ok(mixed.includes('已修正'));
+    assert.ok(mixed.includes('❗ 複查失敗（無法存取），保留上次結果：發現違規'));
+    assert.ok(mixed.includes('重新檢查結果'));
+
+    const all = JSON.stringify(buildRecheckReplyBlocks([{ result: na, previous: bad }], info));
+    assert.ok(all.includes('未變更任何結果'));
+    assert.ok(!all.includes('已修正'));
+});

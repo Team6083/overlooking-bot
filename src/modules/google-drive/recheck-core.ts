@@ -14,6 +14,9 @@ export type HistoryEntry = {
     checkedBy: string;
     status: ComplianceStatus;
     violations: ComplianceViolation[];
+    /** A recheck that could not be completed; it is logged but changed nothing else. */
+    failed?: boolean;
+    errorMessage?: string;
 };
 
 /** The parts of a stored job document that the recheck logic reads; old docs may lack any of them. */
@@ -81,7 +84,7 @@ export function jobStatusFor(result: ComplianceResult): 'completed' | 'error' {
 }
 
 export type JobUpdate = {
-    $set: Record<string, unknown>;
+    $set?: Record<string, unknown>;
     $unset?: Record<string, ''>;
     $push: { history: HistoryEntry };
 };
@@ -108,6 +111,42 @@ export function computeJobUpdate(job: JobState, result: ComplianceResult, checke
         $set.resolvedAt = checkedAt;
     }
     return update;
+}
+
+/** A recheck result that says the check itself did not work (as opposed to a verdict on the file). */
+export function isFailedCheck(result: ComplianceResult): boolean {
+    return result.status === 'cannot_check' || result.status === 'not_accessible';
+}
+
+/** A recheck of a file that already has a stored result counts as failed when the check did not work. */
+export function isRecheckFailure(previous: ComplianceResult | undefined, result: ComplianceResult): boolean {
+    return !!previous && isFailedCheck(result);
+}
+
+/** The result to keep: a failed recheck keeps the previous one. */
+export function effectiveResult(previous: ComplianceResult | undefined, result: ComplianceResult): ComplianceResult {
+    return previous && isRecheckFailure(previous, result) ? previous : result;
+}
+
+/**
+ * The Mongo update for a RECHECK. A failed recheck only appends a history entry marked `failed`
+ * (and does not bump `checkCount`, which counts checks that produced a verdict); the stored
+ * result, status, timestamps and `resolvedAt` stay as they were. Otherwise same as computeJobUpdate.
+ */
+export function computeRecheckUpdate(job: JobState, result: ComplianceResult, checkedBy: string, checkedAt: Date): JobUpdate {
+    if (!isRecheckFailure(job.result, result)) return computeJobUpdate(job, result, checkedBy, checkedAt);
+    return {
+        $push: {
+            history: {
+                checkedAt,
+                checkedBy,
+                status: result.status,
+                violations: result.violations,
+                failed: true,
+                ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+            },
+        },
+    };
 }
 
 const GONE_ERRORS = new Set(['message_not_found', 'thread_not_found', 'channel_not_found', 'not_in_channel', 'is_archived']);

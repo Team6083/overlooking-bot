@@ -10,7 +10,8 @@ import { AppHomeModule } from '../app-home';
 import { checkDriveCompliance } from './checker';
 import {
     CHECKING_REACTION,
-    computeJobUpdate,
+    computeRecheckUpdate,
+    effectiveResult,
     isMessageGoneError,
     JobState,
     overallStatus,
@@ -141,17 +142,21 @@ export class GoogleDriveRecheckModule {
             let restoreReaction = reactionForStatus(previousOverall);
             try {
                 const results = await Promise.all(
-                    jobs.map(j => checkDriveCompliance(j.fileId, j.url, this.driveClient, this.checkerOptions, logger)),
+                    jobs.map(j => checkDriveCompliance(j.fileId, j.url, this.driveClient, this.checkerOptions, logger)
+                        // A throw counts as a failed check of that file, not of the whole recheck.
+                        .catch((err): ComplianceResult => ({
+                            fileId: j.fileId, url: j.url, status: 'cannot_check', violations: [], errorMessage: String(err?.message ?? err),
+                        }))),
                 );
                 const checkedAt = new Date();
                 await Promise.all(jobs.map((job, i) => {
-                    const { $set, $unset, $push } = computeJobUpdate(job as JobState, results[i], userId, checkedAt);
+                    const { $set, $unset, $push } = computeRecheckUpdate(job as JobState, results[i], userId, checkedAt);
                     return this.jobCollection.updateOne(
                         { _id: job._id },
-                        { $set, ...($unset ? { $unset } : {}), $push } as any,
+                        { ...($set ? { $set } : {}), ...($unset ? { $unset } : {}), $push } as any,
                     );
                 }));
-                restoreReaction = reactionForStatus(overallStatus(results));
+                restoreReaction = reactionForStatus(overallStatus(results.map((res, i) => effectiveResult(jobs[i].result as ComplianceResult | undefined, res))));
 
                 await client.chat.postMessage({
                     channel: audit.channel,

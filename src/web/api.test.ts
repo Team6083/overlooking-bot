@@ -42,7 +42,7 @@ const messages = ids.map((_id, i) => ({
 const changed = [{ _id: ids[0], type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.0', message: { ts: '1.0', text: 'new', user: 'U1' }, previous_message: { text: 'old' } }];
 const deleted = [{ _id: ids[0], type: 'message', subtype: 'message_deleted', channel: 'C1', ts: '3.0', deleted_ts: '1.0', previous_message: { text: 'gone', user: 'U2' } }];
 const jobs = [
-    { _id: ids[0], fileId: 'f', url: 'u', channel: 'C1', thread_ts: '1.0', status: 'completed', requestedAt: new Date('2026-01-01T00:00:00Z'), completedAt: new Date('2026-01-01T00:00:01Z'), result: { fileId: 'f', url: 'u', status: 'compliant', violations: [] }, user: 'U1', auditMessage: { channel: 'CA', ts: '9.0' }, lastCheckedAt: new Date('2026-01-01T00:00:01Z'), checkCount: 1, history: [{ checkedAt: new Date('2026-01-01T00:00:01Z'), checkedBy: 'system', status: 'compliant', violations: [] }] },
+    { _id: ids[0], fileId: 'f', url: 'u', channel: 'C1', thread_ts: '1.0', status: 'completed', requestedAt: new Date('2026-01-01T00:00:00Z'), completedAt: new Date('2026-01-01T00:00:01Z'), result: { fileId: 'f', url: 'u', status: 'compliant', violations: [] }, user: 'U1', auditMessage: { channel: 'CA', ts: '9.0' }, lastCheckedAt: new Date('2026-01-01T00:00:01Z'), checkCount: 1, history: [{ checkedAt: new Date('2026-01-01T00:00:01Z'), checkedBy: 'system', status: 'compliant', violations: [] }, { checkedAt: new Date('2026-01-02T00:00:00Z'), checkedBy: 'U2', status: 'not_accessible', violations: [], failed: true, errorMessage: 'HTTP 403' }] },
     { _id: ids[1], fileId: 'g', url: 'v', channel: 'C1', thread_ts: '2.0', status: 'pending', requestedAt: new Date('2026-01-02T00:00:00Z') },
 ];
 
@@ -164,6 +164,9 @@ describe('REST API', () => {
         assert.equal(done.items[0].history[0].checkedBy, 'system');
         assert.equal(done.items[0].auditMessage.ts, '9.0');
         assert.equal(done.items[0].checkCount, 1);
+        assert.equal(done.items[0].history[1].failed, true);
+        assert.equal(done.items[0].history[1].errorMessage, 'HTTP 403');
+        assert.equal(done.items[0].history[0].failed, undefined);
         assert.equal(done.items[0].lastCheckedAt, '2026-01-01T00:00:01.000Z');
     });
 

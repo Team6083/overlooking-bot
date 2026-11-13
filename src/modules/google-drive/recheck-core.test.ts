@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeJobUpdate, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
+import { computeJobUpdate, computeRecheckUpdate, effectiveResult, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
 import type { ComplianceResult } from './types';
 
 const res = (status: ComplianceResult['status'], violations: ComplianceResult['violations'] = []): ComplianceResult =>
@@ -63,4 +63,37 @@ test('isMessageGoneError', () => {
     assert.equal(isMessageGoneError({ data: { error: 'message_not_found' } }), true);
     assert.equal(isMessageGoneError({ data: { error: 'ratelimited' } }), false);
     assert.equal(isMessageGoneError(new Error('x')), false);
+});
+
+test('failed recheck keeps the stored result and only logs history', () => {
+    const na = { ...res('not_accessible'), errorMessage: 'HTTP 403' };
+    const job = { result: bad, checkCount: 1 };
+    const u = computeRecheckUpdate(job, na, 'U1', when);
+    assert.equal(u.$set, undefined);
+    assert.equal(u.$unset, undefined);
+    assert.deepEqual(u.$push.history, { checkedAt: when, checkedBy: 'U1', status: 'not_accessible', violations: [], failed: true, errorMessage: 'HTTP 403' });
+    // a previously compliant file with a resolvedAt keeps it too
+    const kept = computeRecheckUpdate({ result: res('compliant'), checkCount: 2, resolvedAt: when }, res('cannot_check'), 'U1', when);
+    assert.equal(kept.$set, undefined);
+    assert.equal(kept.$unset, undefined);
+});
+
+test('successful recheck and the initial check update as before', () => {
+    const fixed = computeRecheckUpdate({ result: bad, checkCount: 1 }, res('compliant'), 'U1', when);
+    assert.equal(fixed.$set!.resolvedAt, when);
+    assert.equal(fixed.$push.history.failed, undefined);
+    // no stored result yet: a failure is recorded as a normal result
+    assert.equal(computeRecheckUpdate({}, res('not_accessible'), 'U1', when).$set!.status, 'error');
+});
+
+test('mixed report and all-failed report: reaction follows the kept results', () => {
+    const prev = [bad, res('compliant')];
+    const mixed = [res('compliant'), res('not_accessible')]; // first fixed, second failed
+    const kept = mixed.map((r, i) => effectiveResult(prev[i], r));
+    assert.deepEqual(kept.map(r => r.status), ['compliant', 'compliant']);
+    assert.equal(reactionForStatus(overallStatus(kept)), 'white_check_mark');
+
+    const allFailed = [res('cannot_check'), res('not_accessible')].map((r, i) => effectiveResult(prev[i], r));
+    assert.equal(reactionForStatus(overallStatus(allFailed)), reactionForStatus(overallStatus(prev)));
+    assert.equal(reactionForStatus(overallStatus(allFailed)), 'warning');
 });

@@ -270,6 +270,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ComplianceViolation"
+        failed:
+          type: boolean
+          description: True for a recheck that could not be completed; it did not change
+            the stored result.
+        errorMessage:
+          type: string
+          description: "For a failed recheck: why."
       required:
         - checkedAt
         - checkedBy

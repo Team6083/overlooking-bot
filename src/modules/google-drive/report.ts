@@ -1,6 +1,6 @@
 import type { KnownBlock } from '@slack/types';
 import type { ComplianceResult } from './types';
-import { diffResult, isCompliant } from './recheck-core';
+import { diffResult, isCompliant, isRecheckFailure } from './recheck-core';
 
 /** Slack allows 50 blocks per message; a file takes two (divider + section), so cap the files shown. */
 export const MAX_FILES_SHOWN = 20;
@@ -141,28 +141,44 @@ export function buildComplianceBlocks(
 
 export type RecheckEntry = { result: ComplianceResult; previous: ComplianceResult | undefined };
 
+const FAILURE_REASON: Record<string, string> = { cannot_check: '無法稽核', not_accessible: '無法存取' };
+
+/** One file's line in the recheck reply when the recheck of that file did not work. */
+export function describeRecheckFailure(previous: ComplianceResult, next: ComplianceResult): string {
+    return `❗ 複查失敗（${FAILURE_REASON[next.status] ?? STATUS_LABEL[next.status]}），保留上次結果：${STATUS_LABEL[previous.status]}`;
+}
+
 /** Blocks for the thread reply the audit message gets after each recheck. */
 export function buildRecheckReplyBlocks(
     entries: RecheckEntry[],
     info: { triggeredBy: string; checkedAt: Date; recheckValue: string },
 ): KnownBlock[] {
+    const failed = (e: RecheckEntry) => isRecheckFailure(e.previous, e.result);
+    const allFailed = entries.length > 0 && entries.every(failed);
     const blocks: KnownBlock[] = [
-        { type: 'section', text: { type: 'mrkdwn', text: '*🔄 重新檢查結果*' } },
+        {
+            type: 'section',
+            text: { type: 'mrkdwn', text: allFailed ? '*❗ 複查失敗*\n所有檔案都無法完成複查，未變更任何結果。' : '*🔄 重新檢查結果*' },
+        },
         {
             type: 'context',
             elements: [{ type: 'mrkdwn', text: `由 <@${info.triggeredBy}> 觸發 · 檢查時間 ${slackDate(info.checkedAt)}` }],
         },
     ];
-    // Non-compliant first; among compliant files, ones whose status changed before unchanged ones.
-    const rank = (e: RecheckEntry) => isCompliant(e.result.status)
-        ? (diffResult(e.previous, e.result).kind === 'unchanged' ? 4 : 3)
-        : statusRank(e.result.status);
-    for (const { result, previous } of prioritize(entries, rank).slice(0, MAX_FILES_SHOWN)) {
+    // Non-compliant first (by the kept result); among compliant files, changed or failed before unchanged.
+    const rank = (e: RecheckEntry) => {
+        const kept = failed(e) ? e.previous! : e.result;
+        return isCompliant(kept.status)
+            ? (!failed(e) && diffResult(e.previous, e.result).kind === 'unchanged' ? 4 : 3)
+            : statusRank(kept.status);
+    };
+    for (const entry of prioritize(entries, rank).slice(0, MAX_FILES_SHOWN)) {
+        const { result, previous } = entry;
+        const body = failed(entry)
+            ? `${buildFileSection(previous!)}\n*複查：* ${describeRecheckFailure(previous!, result)}`
+            : `${buildFileSection(result)}\n*變化：* ${diffResult(previous, result).text}`;
         blocks.push({ type: 'divider' });
-        blocks.push({
-            type: 'section',
-            text: { type: 'mrkdwn', text: clampSection(`${buildFileSection(result)}\n*變化：* ${diffResult(previous, result).text}`) },
-        });
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: clampSection(body) } });
     }
     const more = moreFilesBlock(entries.length - MAX_FILES_SHOWN);
     if (more) blocks.push(more);
