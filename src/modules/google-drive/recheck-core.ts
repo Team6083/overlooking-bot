@@ -96,6 +96,21 @@ export function jobStatusFor(result: ComplianceResult): 'completed' | 'error' {
     return result.status === 'not_accessible' || result.status === 'cannot_check' ? 'error' : 'completed';
 }
 
+/** Open items: the latest result exists and is not compliant, and nobody marked it handled. */
+export const OPEN_JOB_FILTER = {
+    'result.status': { $exists: true, $ne: 'compliant' },
+    manualResolution: { $exists: false },
+} as const;
+
+/** Exactly the jobs OPEN_JOB_FILTER does not match. */
+export const CLOSED_JOB_FILTER = {
+    $or: [
+        { 'result.status': { $exists: false } },
+        { 'result.status': 'compliant' },
+        { manualResolution: { $exists: true } },
+    ],
+} as const;
+
 /** A successful recheck that finds violations again voids a manual "handled" mark. */
 export function clearsManualResolution(job: Pick<JobState, 'manualResolution'>, result: ComplianceResult): boolean {
     return !!job.manualResolution && result.status === 'violations';
@@ -125,8 +140,9 @@ export function computeJobUpdate(job: JobState, result: ComplianceResult, checke
     };
     if (!isCompliant(result.status)) {
         update.$unset = { resolvedAt: '' };
-        // The problem is demonstrably back, so an earlier "handled" mark no longer holds.
-        if (clearsManualResolution(job, result)) update.$unset.manualResolution = '';
+        // The problem is demonstrably back, so any "handled" mark no longer holds. Unset it
+        // unconditionally: a mark made after this job was read must not survive either.
+        if (result.status === 'violations') update.$unset.manualResolution = '';
     } else if (job.result && !isCompliant(job.result.status)) {
         $set.resolvedAt = checkedAt;
     }
@@ -170,7 +186,7 @@ export function computeRecheckUpdate(job: JobState, result: ComplianceResult, ch
 }
 
 /** The update for marking a job handled: the stored result is deliberately left alone. */
-export function computeManualResolutionUpdate(job: JobState, by: string, at: Date, note: string): JobUpdate {
+export function computeManualResolutionUpdate(job: { result: ComplianceResult }, by: string, at: Date, note: string): JobUpdate {
     return {
         $set: { manualResolution: { by, at, note } satisfies ManualResolution },
         $push: {
@@ -178,8 +194,8 @@ export function computeManualResolutionUpdate(job: JobState, by: string, at: Dat
                 kind: 'manual_resolution',
                 checkedAt: at,
                 checkedBy: by,
-                status: job.result?.status ?? 'cannot_check',
-                violations: job.result?.violations ?? [],
+                status: job.result.status,
+                violations: job.result.violations,
                 note,
             },
         },

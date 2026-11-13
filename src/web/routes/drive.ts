@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ObjectId } from 'mongodb';
 import type { DbCollections } from '../../db';
+import { CLOSED_JOB_FILTER, OPEN_JOB_FILTER } from '../../modules/google-drive/recheck-core';
 import { toDriveJob } from '../dto';
 import { sendError, sendValidationError } from '../errors';
 import { routeName } from '../middleware/request-context';
@@ -23,9 +24,9 @@ export function createDriveRouter(collections: DbCollections): Router {
         if (query.data.status) conditions.push({ status: query.data.status });
         if (query.data.complianceStatus) conditions.push({ 'result.status': query.data.complianceStatus });
         if (query.data.open === 'true') {
-            conditions.push({ 'result.status': { $ne: 'compliant' } }, { manualResolution: { $exists: false } });
+            conditions.push(OPEN_JOB_FILTER);
         } else if (query.data.open === 'false') {
-            conditions.push({ $or: [{ 'result.status': 'compliant' }, { manualResolution: { $exists: true } }] });
+            conditions.push(CLOSED_JOB_FILTER);
         }
         const filter = conditions.length > 0 ? { $and: conditions } : {};
         const { docs, nextCursor } = await findPage(collections.driveComplianceJobs, filter, query.data.limit, after);

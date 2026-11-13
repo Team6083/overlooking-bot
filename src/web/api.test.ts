@@ -20,8 +20,9 @@ function fakeCollection(docs: Record<string, any>[]) {
         if (k === '_id' && v instanceof ObjectId) return doc._id.equals(v);
         if (k === '_id' && v.$lt) return doc._id.toHexString() < v.$lt.toHexString();
         const actual = k.split('.').reduce((o: any, part) => o?.[part], doc);
-        if (v && typeof v === 'object' && '$ne' in v) return actual !== v.$ne;
-        if (v && typeof v === 'object' && '$exists' in v) return (actual !== undefined) === v.$exists;
+        if (v && typeof v === 'object' && !(v instanceof Date) && Object.keys(v).some(op => op.startsWith('$'))) {
+            return (!('$ne' in v) || actual !== v.$ne) && (!('$exists' in v) || (actual !== undefined) === v.$exists);
+        }
         return actual === v;
     });
     return {
@@ -188,10 +189,12 @@ describe('REST API', () => {
 
     it('filters Drive jobs by open, and exposes manual resolutions', async () => {
         const open = await (await get('/api/v1/drive/jobs?open=true')).json();
-        // not compliant and not handled; a job without a result yet counts as open
-        assert.deepEqual(open.items.map((j: any) => j.fileId).sort(), ['g', 'h']);
+        // a result that is not compliant and no handled mark; a job without a result yet is not open
+        assert.deepEqual(open.items.map((j: any) => j.fileId), ['h']);
         const closed = await (await get('/api/v1/drive/jobs?open=false')).json();
-        assert.deepEqual(closed.items.map((j: any) => j.fileId).sort(), ['f', 'i']);
+        assert.deepEqual(closed.items.map((j: any) => j.fileId).sort(), ['f', 'g', 'i']);
+        const total = (await (await get('/api/v1/drive/jobs')).json()).items.length;
+        assert.equal(open.items.length + closed.items.length, total);
         const handled = closed.items.find((j: any) => j.fileId === 'i');
         assert.deepEqual(handled.manualResolution, { by: 'U3', at: '2026-01-05T00:00:00.000Z', note: 'file deleted' });
         assert.equal(handled.history[0].kind, 'manual_resolution');

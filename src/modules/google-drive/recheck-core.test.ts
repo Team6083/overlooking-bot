@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clearsManualResolution, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, effectiveResult, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
+import { CLOSED_JOB_FILTER, OPEN_JOB_FILTER, clearsManualResolution, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, effectiveResult, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
 import type { ComplianceResult } from './types';
 
 const res = (status: ComplianceResult['status'], violations: ComplianceResult['violations'] = []): ComplianceResult =>
@@ -36,7 +36,7 @@ test('computeJobUpdate: initial check', () => {
     assert.equal(u.$set.status, 'completed');
     assert.equal(u.$set.lastCheckedAt, when);
     assert.deepEqual(u.$push.history, { checkedAt: when, checkedBy: 'system', status: 'violations', violations: bad.violations });
-    assert.deepEqual(u.$unset, { resolvedAt: '' });
+    assert.deepEqual(u.$unset, { resolvedAt: '', manualResolution: '' });
 });
 
 test('computeJobUpdate: resolvedAt set on fix, cleared on regression, kept otherwise', () => {
@@ -46,7 +46,7 @@ test('computeJobUpdate: resolvedAt set on fix, cleared on regression, kept other
     assert.equal(fixed.$unset, undefined);
 
     const regressed = computeJobUpdate({ result: res('compliant'), checkCount: 2, resolvedAt: when }, bad, 'U1', when);
-    assert.deepEqual(regressed.$unset, { resolvedAt: '' });
+    assert.deepEqual(regressed.$unset, { resolvedAt: '', manualResolution: '' });
 
     const stillOk = computeJobUpdate({ result: res('compliant'), checkCount: 1 }, res('compliant'), 'U1', when);
     assert.equal('resolvedAt' in stillOk.$set, false);
@@ -130,8 +130,11 @@ test('only a successful recheck that finds violations clears the manual mark', (
     const failed = computeRecheckUpdate(job, res('not_accessible'), 'U1', when);
     assert.equal(failed.$set, undefined);
     assert.equal(failed.$unset, undefined);
-    // never marked: nothing extra to clear
-    assert.deepEqual(computeRecheckUpdate({ result: res('compliant') }, bad, 'U1', when).$unset, { resolvedAt: '' });
+    // violations unset the mark unconditionally, even when the job snapshot has none
+    // (a mark may have been made after the snapshot was read)
+    assert.deepEqual(computeRecheckUpdate({ result: res('compliant') }, bad, 'U1', when).$unset, { resolvedAt: '', manualResolution: '' });
+    // cannot_check on a job with no stored result is a normal result and does not touch marks
+    assert.equal(computeJobUpdate({}, res('cannot_check'), 'system', when).$unset!.manualResolution, undefined);
 });
 
 test('runRecheckStep: a rejected check fails only that file; the others are updated', async () => {
@@ -167,4 +170,10 @@ test('runRecheckStep: all failed leaves the overall status as it was', async () 
     assert.ok(step.updates.every(u => u.$set === undefined));
     const kept = jobs.map((j, i) => ({ result: step.failed[i] ? j.result : step.results[i] }));
     assert.equal(overallStatusOfJobs(kept), overallStatusOfJobs(jobs));
+});
+
+test('open and closed job filters are complements', () => {
+    assert.deepEqual(OPEN_JOB_FILTER['result.status'], { $exists: true, $ne: 'compliant' });
+    assert.deepEqual(OPEN_JOB_FILTER.manualResolution, { $exists: false });
+    assert.equal(CLOSED_JOB_FILTER.$or.length, 3);
 });

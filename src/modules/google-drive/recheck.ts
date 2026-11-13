@@ -8,10 +8,11 @@ import { drive_v3 } from 'googleapis';
 import { Collection } from 'mongodb';
 import { AppHomeModule } from '../app-home';
 import { ObjectId } from 'mongodb';
+import { markJobHandled } from './store';
 import { checkDriveCompliance } from './checker';
 import {
     CHECKING_REACTION,
-    computeManualResolutionUpdate,
+    OPEN_JOB_FILTER,
     overallStatusOfJobs,
     runRecheckStep,
     isMessageGoneError,
@@ -82,17 +83,6 @@ export class GoogleDriveRecheckModule {
         this.app.view(HANDLED_MODAL, async ({ ack, body, view, client, logger }) => {
             const userId = body.user.id;
             const meta = JSON.parse(view.private_metadata) as { jobId: string; home: boolean; channel?: string };
-            // Re-check the permission on submit; the modal may have been open for a while.
-            let allowed = false;
-            try {
-                allowed = await this.isAllowed(client, userId);
-            } catch (err) {
-                logger.error('Permission check failed on Drive mark-handled submit', err);
-            }
-            if (!allowed) {
-                await ack({ response_action: 'errors', errors: { [NOTE_BLOCK]: '只有工作區管理員可以標記已處理。' } });
-                return;
-            }
             const note = (view.state.values[NOTE_BLOCK]?.[NOTE_ACTION]?.value ?? '').trim();
             if (!note) {
                 await ack({ response_action: 'errors', errors: { [NOTE_BLOCK]: '請填寫處理說明。' } });
@@ -100,6 +90,11 @@ export class GoogleDriveRecheckModule {
             }
             await ack();
             try {
+                // The authoritative permission check; slower than Slack's 3 s ack window, so it follows the ack.
+                if (!(await this.isAllowed(client, userId))) {
+                    await this.tell(client, userId, meta.channel, '只有工作區管理員可以標記已處理。');
+                    return;
+                }
                 const message = await this.markHandled(client, meta.jobId, userId, note, logger);
                 if (message) await this.tell(client, userId, meta.channel, message);
             } catch (err) {
@@ -170,10 +165,8 @@ export class GoogleDriveRecheckModule {
         const userId: string = body.user.id;
         const channel: string | undefined = body.channel?.id ?? body.container?.channel_id;
         try {
-            if (!(await this.isAllowed(client, userId))) {
-                await this.tell(client, userId, channel, '只有工作區管理員可以標記已處理。');
-                return;
-            }
+            // Keep the work before views.open to one quick lookup (trigger_id expires fast). The
+            // permission and open-state checks that matter happen again on submit.
             const job = ObjectId.isValid(jobId) ? await this.jobCollection.findOne({ _id: new ObjectId(jobId) }) : null;
             if (!job) {
                 await this.tell(client, userId, channel, '找不到這個項目的紀錄。');
@@ -214,16 +207,12 @@ export class GoogleDriveRecheckModule {
 
     /** Saves the manual resolution and announces it in the audit thread. Returns a message for the user when something needs saying. */
     private async markHandled(client: WebClient, jobId: string, userId: string, note: string, logger: Logger): Promise<string | undefined> {
-        const _id = new ObjectId(jobId);
-        const job = await this.jobCollection.findOne({ _id });
-        if (!job) return '找不到這個項目的紀錄。';
-        if (job.manualResolution) return '這個項目已經被標記為已處理。';
-
-        const at = new Date();
-        const { $set, $push } = computeManualResolutionUpdate(job as JobState, userId, at, note);
-        // Conditioned on no existing mark so two submits cannot both win.
-        const res = await this.jobCollection.updateOne({ _id, manualResolution: { $exists: false } }, { $set, $push } as any);
-        if (res.modifiedCount === 0) return '這個項目已經被標記為已處理。';
+        if (!ObjectId.isValid(jobId)) return '找不到這個項目的紀錄。';
+        const { outcome, job } = await markJobHandled(this.jobCollection, new ObjectId(jobId), userId, new Date(), note);
+        if (outcome === 'not_found' || !job) return '找不到這個項目的紀錄。';
+        if (outcome === 'already_handled') return '這個項目已經被標記為已處理。';
+        if (outcome === 'compliant') return '這個項目目前已合規，不需要標記。';
+        if (outcome === 'no_result') return '這個項目還沒有檢查結果，無法標記。';
 
         const audit = job.auditMessage as { channel: string; ts: string } | undefined;
         if (!audit) return '已儲存，但找不到稽核訊息。';
@@ -280,7 +269,6 @@ export class GoogleDriveRecheckModule {
                 throw err;
             }
 
-            let restoreReaction = reactionForStatus(previousOverall);
             try {
                 const checkedAt = new Date();
                 const step = await runRecheckStep(
@@ -297,10 +285,6 @@ export class GoogleDriveRecheckModule {
                         { ...($set ? { $set } : {}), ...($unset ? { $unset } : {}), $push } as any,
                     );
                 }));
-                restoreReaction = reactionForStatus(overallStatusOfJobs(jobs.map((job, i) => ({
-                    result: step.failed[i] ? job.result as ComplianceResult : results[i],
-                    manualResolution: step.handledAfter[i] ? job.manualResolution : undefined,
-                }))));
 
                 await client.chat.postMessage({
                     channel: audit.channel,
@@ -335,7 +319,14 @@ export class GoogleDriveRecheckModule {
                 }
             } finally {
                 try {
-                    await setStatusReaction(client, audit.channel, audit.ts, restoreReaction);
+                    // Read the report fresh: a mark made while the recheck ran must count too.
+                    let overall = previousOverall;
+                    try {
+                        overall = overallStatusOfJobs(await this.jobCollection.find(reportFilter).toArray() as unknown as JobState[]);
+                    } catch (err) {
+                        logger.error('Failed to re-read the report for its status reaction', err);
+                    }
+                    await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overall));
                 } catch (err) {
                     if (!isMessageGoneError(err)) logger.error('Failed to restore the audit status reaction', err);
                 }
@@ -366,7 +357,7 @@ export class GoogleDriveRecheckModule {
     async renderHomeSection(client: WebClient, userId: string): Promise<KnownBlock[]> {
         if (!(await this.isAllowed(client, userId))) return [];
 
-        const filter = { auditMessage: { $exists: true }, 'result.status': { $ne: 'compliant' }, manualResolution: { $exists: false } };
+        const filter = { auditMessage: { $exists: true }, ...OPEN_JOB_FILTER };
         const [jobs, total] = await Promise.all([
             this.jobCollection.find(filter).sort({ _id: -1 }).limit(HOME_MAX_ROWS).toArray(),
             this.jobCollection.countDocuments(filter),
