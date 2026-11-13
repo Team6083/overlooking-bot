@@ -47,3 +47,33 @@ test('a huge file name cannot push a section past 3000 chars', () => {
     const blocks = buildComplianceBlocks([{ ...bad, fileName: 'x'.repeat(5000) }]);
     for (const b of blocks) if (b.type === 'section') assert.ok(b.text!.text.length <= 3000);
 });
+
+test('when truncated, non-compliant files are shown before compliant ones', () => {
+    const files = [
+        ...Array.from({ length: 25 }, (_, i) => ({ ...ok, fileName: `ok${i}` })),
+        { ...bad, fileName: 'LATE_BAD' },
+        { ...bad, status: 'not_accessible' as const, violations: [], fileName: 'LATE_NA' },
+    ];
+    const text = JSON.stringify(buildComplianceBlocks(files));
+    assert.ok(text.includes('LATE_BAD') && text.includes('LATE_NA'));
+    assert.ok(text.indexOf('LATE_BAD') < text.indexOf('LATE_NA'));
+    assert.ok(text.indexOf('LATE_NA') < text.indexOf('ok0'));
+    assert.ok(!text.includes('ok24'));
+});
+
+test('small lists keep their order', () => {
+    const text = JSON.stringify(buildComplianceBlocks([{ ...ok, fileName: 'FIRST' }, { ...bad, fileName: 'SECOND' }]));
+    assert.ok(text.indexOf('FIRST') < text.indexOf('SECOND'));
+});
+
+test('reply truncation prefers non-compliant, then changed, over unchanged compliant', () => {
+    const entries = [
+        ...Array.from({ length: 25 }, (_, i) => ({ result: { ...ok, fileName: `same${i}` }, previous: ok })),
+        { result: { ...ok, fileName: 'FIXED' }, previous: bad },
+        { result: { ...bad, fileName: 'STILL_BAD' }, previous: bad },
+    ];
+    const text = JSON.stringify(buildRecheckReplyBlocks(entries, { triggeredBy: 'U1', checkedAt: new Date(), recheckValue: 'C|1' }));
+    assert.ok(text.indexOf('STILL_BAD') < text.indexOf('FIXED'));
+    assert.ok(text.indexOf('FIXED') < text.indexOf('same0'));
+    assert.ok(!text.includes('same24'));
+});

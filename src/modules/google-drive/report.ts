@@ -1,6 +1,6 @@
 import type { KnownBlock } from '@slack/types';
 import type { ComplianceResult } from './types';
-import { diffResult } from './recheck-core';
+import { diffResult, isCompliant } from './recheck-core';
 
 /** Slack allows 50 blocks per message; a file takes two (divider + section), so cap the files shown. */
 export const MAX_FILES_SHOWN = 20;
@@ -8,6 +8,19 @@ const MAX_SECTION_CHARS = 3000;
 
 function clampSection(text: string): string {
     return text.length <= MAX_SECTION_CHARS ? text : `${text.slice(0, MAX_SECTION_CHARS - 1)}…`;
+}
+
+/** Lower sorts first: violations, then files that could not be checked, then compliant ones. */
+function statusRank(status: ComplianceResult['status']): number {
+    return status === 'violations' ? 0 : status === 'compliant' ? 2 : 1;
+}
+
+/** When the list must be cut, keep the files that explain the overall status; stable within groups. */
+export function prioritize<T>(items: T[], rank: (item: T) => number): T[] {
+    if (items.length <= MAX_FILES_SHOWN) return items;
+    return items.map((item, i) => ({ item, i, r: rank(item) }))
+        .sort((a, b) => a.r - b.r || a.i - b.i)
+        .map(x => x.item);
 }
 
 function moreFilesBlock(hidden: number): KnownBlock | undefined {
@@ -111,7 +124,7 @@ export function buildComplianceBlocks(
             text: { type: 'mrkdwn', text: headerText },
         },
     ];
-    for (const result of results.slice(0, MAX_FILES_SHOWN)) {
+    for (const result of prioritize(results, r => statusRank(r.status)).slice(0, MAX_FILES_SHOWN)) {
         blocks.push({ type: 'divider' });
         blocks.push({
             type: 'section',
@@ -140,7 +153,11 @@ export function buildRecheckReplyBlocks(
             elements: [{ type: 'mrkdwn', text: `由 <@${info.triggeredBy}> 觸發 · 檢查時間 ${slackDate(info.checkedAt)}` }],
         },
     ];
-    for (const { result, previous } of entries.slice(0, MAX_FILES_SHOWN)) {
+    // Non-compliant first; among compliant files, ones whose status changed before unchanged ones.
+    const rank = (e: RecheckEntry) => isCompliant(e.result.status)
+        ? (diffResult(e.previous, e.result).kind === 'unchanged' ? 4 : 3)
+        : statusRank(e.result.status);
+    for (const { result, previous } of prioritize(entries, rank).slice(0, MAX_FILES_SHOWN)) {
         blocks.push({ type: 'divider' });
         blocks.push({
             type: 'section',

@@ -2,24 +2,36 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { acquireReportLock, LOCK_TTL_MS, releaseReportLock } from './lock';
 
-/** In-memory stand-in supporting just the operators the lock uses. */
-function fakeJobs(docs: Record<string, any>[]) {
+/**
+ * In-memory stand-in supporting just the operators the lock uses. updateMany yields between
+ * documents (each doc is still checked and updated atomically) so concurrent callers interleave,
+ * like they can against a real server; `failAfter` makes it throw after that many updates.
+ */
+function fakeJobs(docs: Record<string, any>[], { failAfter }: { failAfter?: number } = {}) {
     const matches = (d: Record<string, any>, q: Record<string, any>): boolean => Object.entries(q).every(([k, v]) => {
         if (k === '$or') return (v as any[]).some(sub => matches(d, sub));
         if (v && typeof v === 'object' && '$exists' in v) return (k in d) === v.$exists;
         if (v && typeof v === 'object' && '$lt' in v) return d[k] !== undefined && d[k] !== null && d[k] < v.$lt;
         return d[k] === v;
     });
+    let failBudget = failAfter;
     return {
         docs,
         async countDocuments(q: any) { return docs.filter(d => matches(d, q)).length; },
         async updateMany(q: any, u: any) {
-            const hit = docs.filter(d => matches(d, q));
-            for (const d of hit) {
+            let modified = 0;
+            for (const d of docs) {
+                await new Promise(resolve => setImmediate(resolve));
+                if (!matches(d, q)) continue;
+                if (u.$set && failBudget !== undefined) {
+                    if (failBudget === 0) throw new Error('connection lost');
+                    failBudget--;
+                }
                 Object.assign(d, u.$set ?? {});
                 for (const k of Object.keys(u.$unset ?? {})) delete d[k];
+                modified++;
             }
-            return { modifiedCount: hit.length };
+            return { modifiedCount: modified };
         },
     } as any;
 }
@@ -68,4 +80,21 @@ test('a stale lock is taken over', async () => {
 
 test('an unknown report is missing', async () => {
     assert.equal(await acquireReportLock(fakeJobs([]), filter, 'a'), 'missing');
+});
+
+test('concurrent callers: at most one acquires and nothing stays locked after releases', async () => {
+    for (let round = 0; round < 5; round++) {
+        const col = fakeJobs([...report(), { channel: 'C', thread_ts: '1' }]);
+        const tokens = ['a', 'b', 'c'];
+        const results = await Promise.all(tokens.map(t => acquireReportLock(col, filter, t)));
+        assert.ok(results.filter(r => r === 'acquired').length <= 1);
+        await Promise.all(tokens.map((t, i) => results[i] === 'acquired' ? releaseReportLock(col, filter, t) : undefined));
+        assert.ok(col.docs.every((d: any) => !('recheckingAt' in d) && !('recheckingToken' in d)));
+    }
+});
+
+test('updateMany failing mid-way releases the partial lock and rethrows', async () => {
+    const col = fakeJobs(report(), { failAfter: 1 });
+    await assert.rejects(acquireReportLock(col, filter, 'a'), /connection lost/);
+    assert.ok(col.docs.every((d: any) => !('recheckingAt' in d) && !('recheckingToken' in d)));
 });

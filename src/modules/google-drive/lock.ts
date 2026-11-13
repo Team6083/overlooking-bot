@@ -19,17 +19,24 @@ export async function acquireReportLock(
 ): Promise<LockResult> {
     const total = await col.countDocuments(reportFilter);
     if (total === 0) return 'missing';
-    const locked = await col.updateMany(
-        {
-            ...reportFilter,
-            $or: [
-                { recheckingAt: { $exists: false } },
-                { recheckingAt: null },
-                { recheckingAt: { $lt: new Date(now.getTime() - LOCK_TTL_MS) } },
-            ],
-        },
-        { $set: { recheckingAt: now, recheckingToken: token } },
-    );
+    let locked;
+    try {
+        locked = await col.updateMany(
+            {
+                ...reportFilter,
+                $or: [
+                    { recheckingAt: { $exists: false } },
+                    { recheckingAt: null },
+                    { recheckingAt: { $lt: new Date(now.getTime() - LOCK_TTL_MS) } },
+                ],
+            },
+            { $set: { recheckingAt: now, recheckingToken: token } },
+        );
+    } catch (err) {
+        // The update may have locked some docs before failing; free the ones that are ours.
+        await releaseReportLock(col, reportFilter, token).catch(() => undefined);
+        throw err;
+    }
     if (locked.modifiedCount === total) return 'acquired';
     await releaseReportLock(col, reportFilter, token);
     return 'busy';
