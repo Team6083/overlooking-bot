@@ -17,13 +17,21 @@ export type HistoryEntry = {
     /** A recheck that could not be completed; it is logged but changed nothing else. */
     failed?: boolean;
     errorMessage?: string;
+    /** Absent (or `check`) for a check; `manual_resolution` when someone marked the file handled. */
+    kind?: 'check' | 'manual_resolution';
+    /** For `manual_resolution`: the handler's explanation. `checkedBy` is who marked it. */
+    note?: string;
 };
+
+/** Someone marked a still-open problem as handled (file deleted, access lost, ...). */
+export type ManualResolution = { by: string; at: Date; note: string };
 
 /** The parts of a stored job document that the recheck logic reads; old docs may lack any of them. */
 export type JobState = {
     result?: ComplianceResult;
     checkCount?: number;
     resolvedAt?: Date;
+    manualResolution?: ManualResolution;
 };
 
 export function isCompliant(status: ComplianceStatus | undefined): boolean {
@@ -35,6 +43,11 @@ export function overallStatus(results: ComplianceResult[]): OverallStatus {
     if (results.some(r => r.status === 'violations')) return 'violations';
     if (results.some(r => r.status === 'cannot_check' || r.status === 'not_accessible')) return 'cannot_check';
     return 'compliant';
+}
+
+/** Overall status of a report; files marked as manually handled count as compliant. */
+export function overallStatusOfJobs(jobs: Pick<JobState, 'result' | 'manualResolution'>[]): OverallStatus {
+    return overallStatus(jobs.flatMap(j => !j.result ? [] : j.manualResolution ? [{ ...j.result, status: 'compliant' as const }] : [j.result]));
 }
 
 export function reactionForStatus(status: OverallStatus): StatusReaction {
@@ -83,6 +96,11 @@ export function jobStatusFor(result: ComplianceResult): 'completed' | 'error' {
     return result.status === 'not_accessible' || result.status === 'cannot_check' ? 'error' : 'completed';
 }
 
+/** A successful recheck that finds violations again voids a manual "handled" mark. */
+export function clearsManualResolution(job: Pick<JobState, 'manualResolution'>, result: ComplianceResult): boolean {
+    return !!job.manualResolution && result.status === 'violations';
+}
+
 export type JobUpdate = {
     $set?: Record<string, unknown>;
     $unset?: Record<string, ''>;
@@ -107,6 +125,8 @@ export function computeJobUpdate(job: JobState, result: ComplianceResult, checke
     };
     if (!isCompliant(result.status)) {
         update.$unset = { resolvedAt: '' };
+        // The problem is demonstrably back, so an earlier "handled" mark no longer holds.
+        if (clearsManualResolution(job, result)) update.$unset.manualResolution = '';
     } else if (job.result && !isCompliant(job.result.status)) {
         $set.resolvedAt = checkedAt;
     }
@@ -146,6 +166,55 @@ export function computeRecheckUpdate(job: JobState, result: ComplianceResult, ch
                 ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
             },
         },
+    };
+}
+
+/** The update for marking a job handled: the stored result is deliberately left alone. */
+export function computeManualResolutionUpdate(job: JobState, by: string, at: Date, note: string): JobUpdate {
+    return {
+        $set: { manualResolution: { by, at, note } satisfies ManualResolution },
+        $push: {
+            history: {
+                kind: 'manual_resolution',
+                checkedAt: at,
+                checkedBy: by,
+                status: job.result?.status ?? 'cannot_check',
+                violations: job.result?.violations ?? [],
+                note,
+            },
+        },
+    };
+}
+
+export type RecheckJob = JobState & { fileId: string; url: string };
+
+export type RecheckStep = {
+    results: ComplianceResult[];
+    updates: JobUpdate[];
+    /** Per job: whether the result the recheck produced was a failure (previous result kept). */
+    failed: boolean[];
+    /** Per job: whether its manual "handled" mark survives the recheck. */
+    handledAfter: boolean[];
+};
+
+/**
+ * The per-report recheck step, without Slack or DB: runs `check` for every job (a rejected check
+ * is that file's failure, not the whole recheck's) and computes each job's update.
+ */
+export async function runRecheckStep(
+    jobs: RecheckJob[],
+    check: (job: RecheckJob) => Promise<ComplianceResult>,
+    checkedBy: string,
+    checkedAt: Date,
+): Promise<RecheckStep> {
+    const results = await Promise.all(jobs.map(job => check(job).catch((err): ComplianceResult => ({
+        fileId: job.fileId, url: job.url, status: 'cannot_check', violations: [], errorMessage: String(err?.message ?? err),
+    }))));
+    return {
+        results,
+        updates: jobs.map((job, i) => computeRecheckUpdate(job, results[i], checkedBy, checkedAt)),
+        failed: jobs.map((job, i) => isRecheckFailure(job.result, results[i])),
+        handledAfter: jobs.map((job, i) => !!job.manualResolution && !clearsManualResolution(job, results[i])),
     };
 }
 

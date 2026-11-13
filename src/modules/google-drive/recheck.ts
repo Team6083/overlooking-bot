@@ -1,30 +1,33 @@
 import { App } from '@slack/bolt';
 import type { KnownBlock } from '@slack/types';
 import type { WebClient } from '@slack/web-api';
-import { acquireReportLock, releaseReportLock } from './lock';
+import { acquireReportLock, LOCK_TTL_MS, releaseReportLock } from './lock';
 import { setStatusReaction } from './slack';
 import { randomUUID } from 'node:crypto';
 import { drive_v3 } from 'googleapis';
 import { Collection } from 'mongodb';
 import { AppHomeModule } from '../app-home';
+import { ObjectId } from 'mongodb';
 import { checkDriveCompliance } from './checker';
 import {
     CHECKING_REACTION,
-    computeRecheckUpdate,
-    effectiveResult,
+    computeManualResolutionUpdate,
+    overallStatusOfJobs,
+    runRecheckStep,
     isMessageGoneError,
     JobState,
-    overallStatus,
+    RecheckJob,
     reactionForStatus,
 } from './recheck-core';
 import {
     buildRecheckFailedBlocks,
     buildRecheckReplyBlocks,
     decodeRecheckValue,
+    MARK_HANDLED_ACTION_PREFIX,
     encodeRecheckValue,
+    escapeMrkdwn,
     fileLink,
     RECHECK_ACTION_ID,
-    recheckButton,
     slackDate,
     STATUS_EMOJI,
     STATUS_LABEL,
@@ -33,7 +36,11 @@ import type { ComplianceCheckerOptions, ComplianceResult } from './types';
 
 import type { RecheckAllowed } from '../../config';
 
-const HOME_ACTION_PREFIX = 'drive_recheck_home';
+const HOME_MENU_PREFIX = 'drive_home_menu';
+const HANDLED_MODAL = 'drive_mark_handled_modal';
+const NOTE_BLOCK = 'note_block';
+const NOTE_ACTION = 'note';
+const NOTE_MAX = 500;
 const PERMALINK_CACHE_MAX = 200;
 const HOME_MAX_ROWS = 20; // one block per row keeps the home well under Slack's 100-block limit
 
@@ -58,9 +65,55 @@ export class GoogleDriveRecheckModule {
             await ack();
             await this.handleClick(client, body, action, logger, false);
         });
-        this.app.action(new RegExp(`^${HOME_ACTION_PREFIX}`), async ({ ack, body, action, client, logger }) => {
+        this.app.action(new RegExp(`^${HOME_MENU_PREFIX}`), async ({ ack, body, action, client, logger }) => {
             await ack();
-            await this.handleClick(client, body, action, logger, true);
+            const value: string = (action as any).selected_option?.value ?? '';
+            const [kind, ...rest] = value.split('|');
+            if (kind === 'recheck') {
+                await this.handleClick(client, body, { value: rest.join('|') }, logger, true);
+            } else if (kind === 'handled') {
+                await this.openHandledModal(client, body, rest.join('|'), true, logger);
+            }
+        });
+        this.app.action(new RegExp(`^${MARK_HANDLED_ACTION_PREFIX}:`), async ({ ack, body, action, client, logger }) => {
+            await ack();
+            await this.openHandledModal(client, body, (action as any).value ?? '', false, logger);
+        });
+        this.app.view(HANDLED_MODAL, async ({ ack, body, view, client, logger }) => {
+            const userId = body.user.id;
+            const meta = JSON.parse(view.private_metadata) as { jobId: string; home: boolean; channel?: string };
+            // Re-check the permission on submit; the modal may have been open for a while.
+            let allowed = false;
+            try {
+                allowed = await this.isAllowed(client, userId);
+            } catch (err) {
+                logger.error('Permission check failed on Drive mark-handled submit', err);
+            }
+            if (!allowed) {
+                await ack({ response_action: 'errors', errors: { [NOTE_BLOCK]: '只有工作區管理員可以標記已處理。' } });
+                return;
+            }
+            const note = (view.state.values[NOTE_BLOCK]?.[NOTE_ACTION]?.value ?? '').trim();
+            if (!note) {
+                await ack({ response_action: 'errors', errors: { [NOTE_BLOCK]: '請填寫處理說明。' } });
+                return;
+            }
+            await ack();
+            try {
+                const message = await this.markHandled(client, meta.jobId, userId, note, logger);
+                if (message) await this.tell(client, userId, meta.channel, message);
+            } catch (err) {
+                logger.error('Drive mark-handled failed', err);
+                await this.tell(client, userId, meta.channel, '標記已處理時發生未預期的錯誤，請稍後再試。');
+            } finally {
+                if (meta.home) {
+                    try {
+                        await this.appHome.publish(client, userId);
+                    } catch (err) {
+                        logger.error('Failed to refresh the App Home after marking handled', err);
+                    }
+                }
+            }
         });
         this.appHome.addSection((client, userId) => this.renderHomeSection(client, userId));
     }
@@ -113,6 +166,94 @@ export class GoogleDriveRecheckModule {
         }
     }
 
+    private async openHandledModal(client: WebClient, body: any, jobId: string, home: boolean, logger: Logger) {
+        const userId: string = body.user.id;
+        const channel: string | undefined = body.channel?.id ?? body.container?.channel_id;
+        try {
+            if (!(await this.isAllowed(client, userId))) {
+                await this.tell(client, userId, channel, '只有工作區管理員可以標記已處理。');
+                return;
+            }
+            const job = ObjectId.isValid(jobId) ? await this.jobCollection.findOne({ _id: new ObjectId(jobId) }) : null;
+            if (!job) {
+                await this.tell(client, userId, channel, '找不到這個項目的紀錄。');
+                return;
+            }
+            if (job.manualResolution) {
+                await this.tell(client, userId, channel, '這個項目已經被標記為已處理。');
+                return;
+            }
+            await client.views.open({
+                trigger_id: body.trigger_id,
+                view: {
+                    type: 'modal',
+                    callback_id: HANDLED_MODAL,
+                    private_metadata: JSON.stringify({ jobId, home, channel }),
+                    title: { type: 'plain_text', text: '標記已處理' },
+                    submit: { type: 'plain_text', text: '標記' },
+                    close: { type: 'plain_text', text: '取消' },
+                    blocks: [
+                        {
+                            type: 'section',
+                            text: { type: 'mrkdwn', text: `將 *${fileLink({ url: job.url, fileName: job.result?.fileName })}* 標記為已處理。檢查結果不會被更動；之後重新檢查若再發現違規，標記會自動清除。` },
+                        },
+                        {
+                            type: 'input',
+                            block_id: NOTE_BLOCK,
+                            label: { type: 'plain_text', text: '處理說明' },
+                            element: { type: 'plain_text_input', action_id: NOTE_ACTION, multiline: true, max_length: NOTE_MAX },
+                        },
+                    ],
+                },
+            });
+        } catch (err) {
+            logger.error('Failed to open the mark-handled modal', err);
+            await this.tell(client, userId, channel, '無法開啟標記視窗，請稍後再試。');
+        }
+    }
+
+    /** Saves the manual resolution and announces it in the audit thread. Returns a message for the user when something needs saying. */
+    private async markHandled(client: WebClient, jobId: string, userId: string, note: string, logger: Logger): Promise<string | undefined> {
+        const _id = new ObjectId(jobId);
+        const job = await this.jobCollection.findOne({ _id });
+        if (!job) return '找不到這個項目的紀錄。';
+        if (job.manualResolution) return '這個項目已經被標記為已處理。';
+
+        const at = new Date();
+        const { $set, $push } = computeManualResolutionUpdate(job as JobState, userId, at, note);
+        // Conditioned on no existing mark so two submits cannot both win.
+        const res = await this.jobCollection.updateOne({ _id, manualResolution: { $exists: false } }, { $set, $push } as any);
+        if (res.modifiedCount === 0) return '這個項目已經被標記為已處理。';
+
+        const audit = job.auditMessage as { channel: string; ts: string } | undefined;
+        if (!audit) return '已儲存，但找不到稽核訊息。';
+        const gone = '已儲存處理標記，但原本的稽核訊息已不存在，無法在其中回覆。';
+        try {
+            await client.chat.postMessage({
+                channel: audit.channel,
+                thread_ts: audit.ts,
+                reply_broadcast: false,
+                text: `✔️ <@${userId}> 將 ${fileLink({ url: job.url, fileName: job.result?.fileName })} 標記為已處理：${escapeMrkdwn(note)}`,
+            });
+        } catch (err) {
+            if (isMessageGoneError(err)) return gone;
+            logger.error('Failed to post the mark-handled reply', err);
+        }
+        try {
+            const siblings = await this.jobCollection
+                .find({ channel: job.channel, thread_ts: job.thread_ts, auditMessage: { $exists: true } }).toArray();
+            // While a recheck runs it owns the reaction and restores it from its own view of the report.
+            const busy = siblings.some(j => j.recheckingToken && j.recheckingAt instanceof Date && j.recheckingAt.getTime() > Date.now() - LOCK_TTL_MS);
+            if (!busy) {
+                await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overallStatusOfJobs(siblings as unknown as JobState[])));
+            }
+        } catch (err) {
+            if (isMessageGoneError(err)) return gone;
+            logger.error('Failed to update the status reaction after marking handled', err);
+        }
+        return undefined;
+    }
+
     /**
      * Rechecks every file of one report. Returns a message for the clicker when the recheck
      * could not run (locked, report gone), undefined otherwise.
@@ -129,7 +270,7 @@ export class GoogleDriveRecheckModule {
             const audit = jobs[0]?.auditMessage as { channel: string; ts: string } | undefined;
             if (!audit) return '找不到這份報告的稽核訊息。';
             const recheckValue = encodeRecheckValue(channel, ts);
-            const previousOverall = overallStatus(jobs.flatMap(j => (j.result ? [j.result as ComplianceResult] : [])));
+            const previousOverall = overallStatusOfJobs(jobs as unknown as JobState[]);
             const gone = '原本的稽核訊息已不存在，無法重新檢查。';
 
             try {
@@ -141,29 +282,38 @@ export class GoogleDriveRecheckModule {
 
             let restoreReaction = reactionForStatus(previousOverall);
             try {
-                const results = await Promise.all(
-                    jobs.map(j => checkDriveCompliance(j.fileId, j.url, this.driveClient, this.checkerOptions, logger)
-                        // A throw counts as a failed check of that file, not of the whole recheck.
-                        .catch((err): ComplianceResult => ({
-                            fileId: j.fileId, url: j.url, status: 'cannot_check', violations: [], errorMessage: String(err?.message ?? err),
-                        }))),
-                );
                 const checkedAt = new Date();
+                const step = await runRecheckStep(
+                    jobs as unknown as RecheckJob[],
+                    j => checkDriveCompliance(j.fileId, j.url, this.driveClient, this.checkerOptions, logger),
+                    userId,
+                    checkedAt,
+                );
+                const { results } = step;
                 await Promise.all(jobs.map((job, i) => {
-                    const { $set, $unset, $push } = computeRecheckUpdate(job as JobState, results[i], userId, checkedAt);
+                    const { $set, $unset, $push } = step.updates[i];
                     return this.jobCollection.updateOne(
                         { _id: job._id },
                         { ...($set ? { $set } : {}), ...($unset ? { $unset } : {}), $push } as any,
                     );
                 }));
-                restoreReaction = reactionForStatus(overallStatus(results.map((res, i) => effectiveResult(jobs[i].result as ComplianceResult | undefined, res))));
+                restoreReaction = reactionForStatus(overallStatusOfJobs(jobs.map((job, i) => ({
+                    result: step.failed[i] ? job.result as ComplianceResult : results[i],
+                    manualResolution: step.handledAfter[i] ? job.manualResolution : undefined,
+                }))));
 
                 await client.chat.postMessage({
                     channel: audit.channel,
                     thread_ts: audit.ts,
                     reply_broadcast: false,
                     blocks: buildRecheckReplyBlocks(
-                        results.map((result, i) => ({ result, previous: jobs[i].result as ComplianceResult | undefined })),
+                        results.map((result, i) => ({
+                            result,
+                            previous: jobs[i].result as ComplianceResult | undefined,
+                            jobId: String(jobs[i]._id),
+                            hadManualResolution: !!jobs[i].manualResolution,
+                            handled: step.handledAfter[i],
+                        })),
                         { triggeredBy: userId, checkedAt, recheckValue },
                     ),
                     text: 'Google Drive 重新檢查結果',
@@ -216,7 +366,7 @@ export class GoogleDriveRecheckModule {
     async renderHomeSection(client: WebClient, userId: string): Promise<KnownBlock[]> {
         if (!(await this.isAllowed(client, userId))) return [];
 
-        const filter = { auditMessage: { $exists: true }, 'result.status': { $ne: 'compliant' } };
+        const filter = { auditMessage: { $exists: true }, 'result.status': { $ne: 'compliant' }, manualResolution: { $exists: false } };
         const [jobs, total] = await Promise.all([
             this.jobCollection.find(filter).sort({ _id: -1 }).limit(HOME_MAX_ROWS).toArray(),
             this.jobCollection.countDocuments(filter),
@@ -224,7 +374,7 @@ export class GoogleDriveRecheckModule {
 
         const blocks: KnownBlock[] = [
             { type: 'divider' },
-            { type: 'section', text: { type: 'mrkdwn', text: '*Google Drive 未合規項目*\n最新一次檢查結果不是「合規」的檔案。' } },
+            { type: 'section', text: { type: 'mrkdwn', text: '*Google Drive 未合規項目*\n最新一次檢查結果不是「合規」、且尚未標記為已處理的檔案。' } },
         ];
         if (jobs.length === 0) {
             blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: '目前沒有未合規的項目。' }] });
@@ -244,7 +394,14 @@ export class GoogleDriveRecheckModule {
             blocks.push({
                 type: 'section',
                 text: { type: 'mrkdwn', text: lines.join('\n') },
-                accessory: recheckButton(encodeRecheckValue(job.channel, job.thread_ts), `${HOME_ACTION_PREFIX}:${i}`),
+                accessory: {
+                    type: 'overflow',
+                    action_id: `${HOME_MENU_PREFIX}:${i}`,
+                    options: [
+                        { text: { type: 'plain_text', text: '🔄 重新檢查', emoji: true }, value: `recheck|${encodeRecheckValue(job.channel, job.thread_ts)}` },
+                        { text: { type: 'plain_text', text: '✔️ 標記已處理', emoji: true }, value: `handled|${String(job._id)}` },
+                    ],
+                },
             });
         });
         if (total > jobs.length) {

@@ -22,6 +22,8 @@ test('audit report has a recheck button only when given a value', () => {
     assert.ok(!buildComplianceBlocks([bad], { userId: 'U1', channel: 'C1' }).some(b => b.type === 'actions'));
 });
 
+function res(status: ComplianceResult['status']): ComplianceResult { return { ...bad, status, violations: [] }; }
+
 test('recheck reply shows the change, the trigger and a button', () => {
     const blocks = buildRecheckReplyBlocks([{ result: ok, previous: bad }], {
         triggeredBy: 'U9', checkedAt: new Date('2026-01-01T00:00:00Z'), recheckValue: 'C1|1.2',
@@ -92,4 +94,36 @@ test('failed recheck of a file is shown as kept, not as a status change', () => 
     const all = JSON.stringify(buildRecheckReplyBlocks([{ result: na, previous: bad }], info));
     assert.ok(all.includes('未變更任何結果'));
     assert.ok(!all.includes('已修正'));
+});
+
+test('reply: open non-compliant files get a mark-handled button; handled and compliant ones do not', () => {
+    const info = { triggeredBy: 'U1', checkedAt: new Date(), recheckValue: 'C|1' };
+    const blocks = buildRecheckReplyBlocks([
+        { result: bad, previous: bad, jobId: 'J1' },
+        { result: { ...bad, fileName: 'H' }, previous: bad, jobId: 'J2', hadManualResolution: true, handled: true },
+        { result: ok, previous: bad, jobId: 'J3' },
+    ], info);
+    const buttons = blocks.flatMap((b: any) => b.accessory ? [b.accessory] : []);
+    assert.deepEqual(buttons.map((b: any) => b.value), ['J1']);
+    assert.ok(buttons[0].action_id.startsWith('drive_mark_handled:'));
+    assert.ok(JSON.stringify(blocks).includes('已標記為已處理'));
+    assert.ok(blocks.length <= 50);
+});
+
+test('reply says when a handled mark was cleared by new violations', () => {
+    const text = JSON.stringify(buildRecheckReplyBlocks(
+        [{ result: bad, previous: res('not_accessible'), jobId: 'J1', hadManualResolution: true, handled: false }],
+        { triggeredBy: 'U1', checkedAt: new Date(), recheckValue: 'C|1' },
+    ));
+    assert.ok(text.includes('已處理標記已清除'));
+});
+
+test('a failed recheck of a handled file keeps showing it as handled, with no button', () => {
+    const na: ComplianceResult = { ...bad, status: 'not_accessible', violations: [] };
+    const blocks = buildRecheckReplyBlocks(
+        [{ result: na, previous: na, jobId: 'J1', hadManualResolution: true, handled: true }],
+        { triggeredBy: 'U1', checkedAt: new Date(), recheckValue: 'C|1' },
+    );
+    assert.ok(!blocks.some((b: any) => b.accessory));
+    assert.ok(!JSON.stringify(blocks).includes('已處理標記已清除'));
 });

@@ -96,9 +96,13 @@ When `GOOGLE_DRIVE_AUDIT_CHANNEL` is set, each audit report has a "重新檢查"
 - If the audit message was deleted, the person who clicked gets a private notice instead.
 - Two rechecks of the same report cannot run at once: a report is locked all-or-nothing (a lock older than 2 minutes is ignored), and the second clicker is told to wait.
 
-The App Home lists files whose latest result is not compliant (newest first, up to 20) with a link to the audit message and a recheck button, for everyone who is allowed to recheck. Rechecks are manual; nothing runs on a schedule.
+The App Home lists files whose latest result is not compliant and that were not marked handled (newest first, up to 20) with a link to the audit message and a menu with "🔄 重新檢查" and "✔️ 標記已處理", for everyone who is allowed to recheck. Rechecks are manual; nothing runs on a schedule.
 
-Each `driveComplianceJobs` document (one per message and file) also stores: `user` (poster), `auditMessage` (`{ channel, ts }`), `result` (the latest result), `lastCheckedAt`, `checkCount`, `history` (`[{ checkedAt, checkedBy, status, violations, failed?, errorMessage? }]`, the initial check first with `checkedBy: "system"`), `resolvedAt` (set when a non-compliant file turns compliant, cleared if it regresses) and a temporary `recheckingAt`/`recheckingToken` lock. Documents created before this feature lack these fields.
+##### Marking an item as handled
+
+When an item can never turn compliant (the file was deleted, the bot lost access), someone who is allowed to recheck can mark that one file (one job document) as handled, from the App Home menu or from the button on its section in a recheck reply. A modal asks for a required explanation (up to 500 characters); the permission is checked on click and again on submit. This sets `manualResolution` (`{ by, at, note }`) on the job and appends a history entry with `kind: "manual_resolution"` and the `note`; the stored `result` is not changed. The audit thread gets a reply naming the person, the file and the explanation, and the status reaction is recomputed counting handled files as compliant. If the audit message was deleted, the mark is still saved and the person is told privately. Handled items leave the App Home list. A later recheck that finds violations again removes `manualResolution` ("已處理標記已清除" in the reply); a compliant or failed recheck leaves it in place.
+
+Each `driveComplianceJobs` document (one per message and file) also stores: `user` (poster), `auditMessage` (`{ channel, ts }`), `result` (the latest result), `lastCheckedAt`, `checkCount`, `manualResolution`, `history` (`[{ kind?, checkedAt, checkedBy, status, violations, failed?, errorMessage?, note? }]`, the initial check first with `checkedBy: "system"`), `resolvedAt` (set when a non-compliant file turns compliant, cleared if it regresses) and a temporary `recheckingAt`/`recheckingToken` lock. Documents created before this feature lack these fields.
 
 With neither approved-location variable set, only sharing settings are checked. The service account must be able to read a file to check it; otherwise the report says the file is not accessible or cannot be checked.
 
@@ -131,7 +135,7 @@ All routes live under `/api/v1` and need the bearer token. The full contract is 
 | --- | --- | --- |
 | `GET` | `/api/v1/messages?collection=` | List messages; `collection` is `messages` (default), `changed_messages` or `deleted_messages` |
 | `GET` | `/api/v1/messages/:id?collection=` | One message |
-| `GET` | `/api/v1/drive/jobs?status=&complianceStatus=` | List Drive check records; `status` is `pending`, `completed` or `error`; `complianceStatus` (the latest result) is `compliant`, `violations`, `cannot_check` or `not_accessible` |
+| `GET` | `/api/v1/drive/jobs?status=&complianceStatus=&open=` | List Drive check records; `status` is `pending`, `completed` or `error`; `complianceStatus` (the latest result) is `compliant`, `violations`, `cannot_check` or `not_accessible`; `open=true` keeps items whose latest result is not compliant and that were not marked handled, `open=false` the rest |
 | `GET` | `/api/v1/drive/jobs/:id` | One Drive check record |
 
 Lists are sorted newest first and return `{ items, nextCursor }`. Pass `nextCursor` back as `?cursor=` for the next page; it is `null` on the last page. `limit` defaults to 50 and is clamped to 200.

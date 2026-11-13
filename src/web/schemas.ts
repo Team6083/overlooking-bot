@@ -46,6 +46,7 @@ export const COMPLIANCE_STATUSES = ['compliant', 'violations', 'cannot_check', '
 
 export const ListDriveJobsQuery = z.object({
     status: z.enum(DRIVE_JOB_STATUSES).optional(),
+    open: z.enum(['true', 'false']).optional().openapi({ description: '`true`: the latest result is not compliant and the item was not manually marked handled; `false`: the complement.' }),
     complianceStatus: z.enum(COMPLIANCE_STATUSES).optional().openapi({ description: 'Filter on the latest check result (`result.status`).' }),
     limit,
     cursor,
@@ -103,12 +104,20 @@ const ComplianceResult = z.object({
 
 const DriveCheckHistoryEntry = z.object({
     checkedAt: z.iso.datetime(),
-    checkedBy: z.string().openapi({ description: 'Slack user id of whoever triggered the check, or `system` for the initial check.' }),
+    kind: z.enum(['check', 'manual_resolution']).openapi({ description: '`manual_resolution`: someone marked the item handled (`status`/`violations` are the result at that time).' }),
+    checkedBy: z.string().openapi({ description: 'Slack user id of whoever triggered the check or marked the item handled, or `system` for the initial check.' }),
+    note: z.string().optional().openapi({ description: 'For `manual_resolution`: the explanation given.' }),
     status: z.enum(COMPLIANCE_STATUSES),
     violations: z.array(ComplianceViolation),
     failed: z.boolean().optional().openapi({ description: 'True for a recheck that could not be completed; it did not change the stored result.' }),
     errorMessage: z.string().optional().openapi({ description: 'For a failed recheck: why.' }),
 }).openapi('DriveCheckHistoryEntry');
+
+const ManualResolution = z.object({
+    by: z.string().openapi({ description: 'Slack user id.' }),
+    at: z.iso.datetime(),
+    note: z.string(),
+}).openapi('ManualResolution');
 
 export const DriveJob = z.object({
     id: z.string(),
@@ -126,6 +135,7 @@ export const DriveJob = z.object({
     lastCheckedAt: z.iso.datetime().optional(),
     checkCount: z.number().int().optional().openapi({ description: 'How many checks produced a verdict, the initial check included. Failed rechecks are not counted; see history.' }),
     history: z.array(DriveCheckHistoryEntry).optional().openapi({ description: 'Every check, oldest first.' }),
+    manualResolution: ManualResolution.optional().openapi({ description: 'Set when someone marked the item handled; cleared when a later recheck finds violations again.' }),
     resolvedAt: z.iso.datetime().optional().openapi({ description: 'When the result turned compliant after a non-compliant one; absent while non-compliant.' }),
 }).openapi('DriveJob');
 

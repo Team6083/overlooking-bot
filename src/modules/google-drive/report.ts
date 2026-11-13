@@ -139,7 +139,27 @@ export function buildComplianceBlocks(
     return blocks;
 }
 
-export type RecheckEntry = { result: ComplianceResult; previous: ComplianceResult | undefined };
+export type RecheckEntry = {
+    result: ComplianceResult;
+    previous: ComplianceResult | undefined;
+    /** Job doc id; with `handled` it decides whether the file gets a "mark handled" button. */
+    jobId?: string;
+    /** Whether the file was marked handled before this recheck. */
+    hadManualResolution?: boolean;
+    /** Whether the mark is still in place after this recheck. */
+    handled?: boolean;
+};
+
+export const MARK_HANDLED_ACTION_PREFIX = 'drive_mark_handled';
+
+export function markHandledButton(jobId: string, index: number) {
+    return {
+        type: 'button' as const,
+        text: { type: 'plain_text' as const, text: '✔️ 標記已處理', emoji: true as const },
+        action_id: `${MARK_HANDLED_ACTION_PREFIX}:${index}`,
+        value: jobId,
+    };
+}
 
 const FAILURE_REASON: Record<string, string> = { cannot_check: '無法稽核', not_accessible: '無法存取' };
 
@@ -167,6 +187,7 @@ export function buildRecheckReplyBlocks(
     ];
     // Non-compliant first (by the kept result); among compliant files, changed or failed before unchanged.
     const rank = (e: RecheckEntry) => {
+        if (e.handled) return 2; // handled problems sit between open problems and compliant files
         const kept = failed(e) ? e.previous! : e.result;
         return isCompliant(kept.status)
             ? (!failed(e) && diffResult(e.previous, e.result).kind === 'unchanged' ? 4 : 3)
@@ -174,11 +195,19 @@ export function buildRecheckReplyBlocks(
     };
     for (const entry of prioritize(entries, rank).slice(0, MAX_FILES_SHOWN)) {
         const { result, previous } = entry;
-        const body = failed(entry)
+        const cleared = !!entry.hadManualResolution && !entry.handled && !failed(entry);
+        const kept = failed(entry) ? previous! : result;
+        const body = (failed(entry)
             ? `${buildFileSection(previous!)}\n*複查：* ${describeRecheckFailure(previous!, result)}`
-            : `${buildFileSection(result)}\n*變化：* ${diffResult(previous, result).text}`;
+            : `${buildFileSection(result)}\n*變化：* ${diffResult(previous, result).text}`)
+            + (cleared ? '\n:warning: 已處理標記已清除' : entry.handled ? '\n✔️ 已標記為已處理' : '');
         blocks.push({ type: 'divider' });
-        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: clampSection(body) } });
+        const showButton = entry.jobId && !entry.handled && !isCompliant(kept.status);
+        blocks.push({
+            type: 'section',
+            text: { type: 'mrkdwn', text: clampSection(body) },
+            ...(showButton ? { accessory: markHandledButton(entry.jobId!, blocks.length) } : {}),
+        });
     }
     const more = moreFilesBlock(entries.length - MAX_FILES_SHOWN);
     if (more) blocks.push(more);

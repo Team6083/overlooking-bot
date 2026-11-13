@@ -181,6 +181,8 @@ components:
           items:
             $ref: "#/components/schemas/DriveCheckHistoryEntry"
           description: Every check, oldest first.
+        manualResolution:
+          $ref: "#/components/schemas/ManualResolution"
         resolvedAt:
           type: string
           format: date-time
@@ -256,10 +258,20 @@ components:
         checkedAt:
           type: string
           format: date-time
+        kind:
+          type: string
+          enum:
+            - check
+            - manual_resolution
+          description: "`manual_resolution`: someone marked the item handled
+            (`status`/`violations` are the result at that time)."
         checkedBy:
           type: string
-          description: Slack user id of whoever triggered the check, or `system` for the
-            initial check.
+          description: Slack user id of whoever triggered the check or marked the item
+            handled, or `system` for the initial check.
+        note:
+          type: string
+          description: "For `manual_resolution`: the explanation given."
         status:
           type: string
           enum:
@@ -280,9 +292,27 @@ components:
           description: "For a failed recheck: why."
       required:
         - checkedAt
+        - kind
         - checkedBy
         - status
         - violations
+    ManualResolution:
+      type: object
+      properties:
+        by:
+          type: string
+          description: Slack user id.
+        at:
+          type: string
+          format: date-time
+        note:
+          type: string
+      required:
+        - by
+        - at
+        - note
+      description: Set when someone marked the item handled; cleared when a later
+        recheck finds violations again.
   parameters: {}
 paths:
   /api/v1/messages:
@@ -419,6 +449,18 @@ paths:
               - error
           required: false
           name: status
+          in: query
+        - schema:
+            type: string
+            enum:
+              - "true"
+              - "false"
+            description: "`true`: the latest result is not compliant and the item was not
+              manually marked handled; `false`: the complement."
+          required: false
+          description: "`true`: the latest result is not compliant and the item was not
+            manually marked handled; `false`: the complement."
+          name: open
           in: query
         - schema:
             type: string
