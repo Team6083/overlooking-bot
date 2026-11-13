@@ -124,7 +124,7 @@ export const DriveJob = z.object({
     auditMessage: z.object({ channel: z.string(), ts: z.string() }).optional()
         .openapi({ description: 'The audit channel message that reported this check.' }),
     lastCheckedAt: z.iso.datetime().optional(),
-    checkCount: z.number().int().optional().openapi({ description: 'How many times the file was checked, the initial check included.' }),
+    checkCount: z.number().int().optional().openapi({ description: 'How many checks produced a verdict, the initial check included. Failed rechecks are not counted; see history.' }),
     history: z.array(DriveCheckHistoryEntry).optional().openapi({ description: 'Every check, oldest first.' }),
     resolvedAt: z.iso.datetime().optional().openapi({ description: 'When the result turned compliant after a non-compliant one; absent while non-compliant.' }),
 }).openapi('DriveJob');

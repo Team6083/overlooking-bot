@@ -174,7 +174,8 @@ components:
           format: date-time
         checkCount:
           type: integer
-          description: How many times the file was checked, the initial check included.
+          description: How many checks produced a verdict, the initial check included.
+            Failed rechecks are not counted; see history.
         history:
           type: array
           items:
