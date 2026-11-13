@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { markSurvivesRecheck, CLOSED_JOB_FILTER, OPEN_JOB_FILTER, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
+import { shouldApplyReaction, markSurvivesRecheck, CLOSED_JOB_FILTER, OPEN_JOB_FILTER, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
 import type { ComplianceResult } from './types';
 
 const res = (status: ComplianceResult['status'], violations: ComplianceResult['violations'] = []): ComplianceResult =>
@@ -169,4 +169,11 @@ test('markSurvivesRecheck: only violations void an existing mark', () => {
     assert.equal(markSurvivesRecheck(true, res('compliant')), true);
     assert.equal(markSurvivesRecheck(true, res('not_accessible')), true);
     assert.equal(markSurvivesRecheck(false, bad), false);
+});
+
+test('shouldApplyReaction skips only an unchanged status', () => {
+    assert.equal(shouldApplyReaction(undefined, 'compliant'), true);
+    assert.equal(shouldApplyReaction('violations', 'violations'), false);
+    assert.equal(shouldApplyReaction('violations', 'compliant'), true);
+    assert.equal(shouldApplyReaction('violations', undefined), false);
 });

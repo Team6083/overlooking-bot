@@ -101,6 +101,14 @@ export function markSurvivesRecheck(hadMark: boolean, result: ComplianceResult):
     return hadMark && result.status !== 'violations';
 }
 
+/**
+ * Whether the status reaction needs another remove/add round: not when the status read now is the
+ * one already applied. With nothing applied yet (`undefined`) it always does.
+ */
+export function shouldApplyReaction(applied: OverallStatus | undefined, fresh: OverallStatus | undefined): boolean {
+    return fresh !== undefined && fresh !== applied;
+}
+
 /** Open items: the latest result exists and is not compliant, and nobody marked it handled. */
 export const OPEN_JOB_FILTER = {
     'result.status': { $exists: true, $ne: 'compliant' },

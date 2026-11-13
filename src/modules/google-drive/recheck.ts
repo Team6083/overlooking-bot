@@ -21,6 +21,7 @@ import {
     OverallStatus,
     RecheckJob,
     reactionForStatus,
+    shouldApplyReaction,
 } from './recheck-core';
 import {
     buildRecheckFailedBlocks,
@@ -261,6 +262,7 @@ export class GoogleDriveRecheckModule {
         if (lock === 'busy') return '這份報告正在重新檢查中，請稍候再試。';
 
         let syncAudit: { channel: string; ts: string } | undefined;
+        let applied: OverallStatus | undefined; // the status the first sync put on the message
         try {
             const jobs = await this.jobCollection.find({ ...reportFilter, recheckingToken: token }).sort({ _id: 1 }).toArray();
             const audit = jobs[0]?.auditMessage as { channel: string; ts: string } | undefined;
@@ -331,24 +333,29 @@ export class GoogleDriveRecheckModule {
                     logger.error('Failed to post the Drive recheck failure notice', replyErr);
                 }
             } finally {
-                await this.syncReaction(client, audit, reportFilter, previousOverall, logger);
+                applied = await this.syncReaction(client, audit, reportFilter, previousOverall, undefined, logger);
             }
             return undefined;
         } finally {
             await releaseReportLock(this.jobCollection, reportFilter, token);
             // A mark committed after the sync above but before the lock was released is only seen now.
-            if (syncAudit) await this.syncReaction(client, syncAudit, reportFilter, undefined, logger);
+            if (syncAudit) await this.syncReaction(client, syncAudit, reportFilter, undefined, applied, logger);
         }
     }
 
-    /** Sets the audit message's status reaction from the report's stored state, read fresh. */
+    /**
+     * Sets the audit message's status reaction from the report's stored state, read fresh. Skips the
+     * reaction calls when that state is the one already `applied`. Returns the status now on the
+     * message, or `applied` unchanged when nothing was set.
+     */
     private async syncReaction(
         client: WebClient,
         audit: { channel: string; ts: string },
         reportFilter: Record<string, unknown>,
         fallback: OverallStatus | undefined,
+        applied: OverallStatus | undefined,
         logger: Logger,
-    ) {
+    ): Promise<OverallStatus | undefined> {
         try {
             let overall = fallback;
             try {
@@ -356,9 +363,12 @@ export class GoogleDriveRecheckModule {
             } catch (err) {
                 logger.error('Failed to re-read the report for its status reaction', err);
             }
-            if (overall) await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overall));
+            if (!shouldApplyReaction(applied, overall)) return applied;
+            await setStatusReaction(client, audit.channel, audit.ts, reactionForStatus(overall!));
+            return overall;
         } catch (err) {
             if (!isMessageGoneError(err)) logger.error('Failed to set the audit status reaction', err);
+            return applied;
         }
     }
 
