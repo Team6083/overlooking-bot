@@ -1,7 +1,7 @@
 import { App } from '@slack/bolt';
 import type { KnownBlock } from '@slack/types';
 import type { WebClient } from '@slack/web-api';
-import { acquireReportLock, LOCK_TTL_MS, releaseReportLock } from './lock';
+import { acquireReportLock, releaseReportLock } from './lock';
 import { setStatusReaction } from './slack';
 import { randomUUID } from 'node:crypto';
 import { drive_v3 } from 'googleapis';
@@ -59,7 +59,6 @@ export class GoogleDriveRecheckModule {
         private driveClient: drive_v3.Drive,
         private jobCollection: Collection,
         private checkerOptions: ComplianceCheckerOptions,
-        private auditChannel: string,
         private allowed: RecheckAllowed,
     ) {}
 

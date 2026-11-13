@@ -1,5 +1,5 @@
 import type { Collection, Document } from 'mongodb';
-import { computeManualResolutionUpdate, JobState, OPEN_JOB_FILTER } from './recheck-core';
+import { computeManualResolutionUpdate, OPEN_JOB_FILTER } from './recheck-core';
 import type { ComplianceResult } from './types';
 
 export type MarkHandledOutcome = 'marked' | 'not_found' | 'no_result' | 'compliant' | 'already_handled';
@@ -30,5 +30,3 @@ export async function markJobHandled(
     const now = await col.findOne({ _id } as any);
     return { outcome: now ? outcome(now) : 'not_found', job: now ?? job };
 }
-
-export type { JobState };

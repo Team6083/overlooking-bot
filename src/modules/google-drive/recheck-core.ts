@@ -116,11 +116,6 @@ export const CLOSED_JOB_FILTER = {
     ],
 } as const;
 
-/** A successful recheck that finds violations again voids a manual "handled" mark. */
-export function clearsManualResolution(job: Pick<JobState, 'manualResolution'>, result: ComplianceResult): boolean {
-    return !!job.manualResolution && result.status === 'violations';
-}
-
 export type JobUpdate = {
     $set?: Record<string, unknown>;
     $unset?: Record<string, ''>;
@@ -162,11 +157,6 @@ export function isFailedCheck(result: ComplianceResult): boolean {
 /** A recheck of a file that already has a stored result counts as failed when the check did not work. */
 export function isRecheckFailure(previous: ComplianceResult | undefined, result: ComplianceResult): boolean {
     return !!previous && isFailedCheck(result);
-}
-
-/** The result to keep: a failed recheck keeps the previous one. */
-export function effectiveResult(previous: ComplianceResult | undefined, result: ComplianceResult): ComplianceResult {
-    return previous && isRecheckFailure(previous, result) ? previous : result;
 }
 
 /**
@@ -214,8 +204,6 @@ export type RecheckStep = {
     updates: JobUpdate[];
     /** Per job: whether the result the recheck produced was a failure (previous result kept). */
     failed: boolean[];
-    /** Per job: whether its manual "handled" mark survives the recheck. */
-    handledAfter: boolean[];
 };
 
 /**
@@ -235,7 +223,6 @@ export async function runRecheckStep(
         results,
         updates: jobs.map((job, i) => computeRecheckUpdate(job, results[i], checkedBy, checkedAt)),
         failed: jobs.map((job, i) => isRecheckFailure(job.result, results[i])),
-        handledAfter: jobs.map((job, i) => markSurvivesRecheck(!!job.manualResolution, results[i])),
     };
 }
 

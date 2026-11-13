@@ -95,7 +95,6 @@ import { WebhookRelayModule } from './modules/webhook-relay';
                     allowDomainSharing: config.features.googleDriveAllowDomainSharing,
                     maxParentTraversalDepth: config.features.googleDriveMaxParentTraversalDepth,
                 },
-                config.features.googleDriveAuditChannel,
                 config.features.googleDriveRecheckAllowed,
             );
             await recheckModule.init();

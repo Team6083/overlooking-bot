@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { markSurvivesRecheck, CLOSED_JOB_FILTER, OPEN_JOB_FILTER, clearsManualResolution, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, effectiveResult, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
+import { markSurvivesRecheck, CLOSED_JOB_FILTER, OPEN_JOB_FILTER, computeManualResolutionUpdate, overallStatusOfJobs, runRecheckStep, computeJobUpdate, computeRecheckUpdate, diffResult, isMessageGoneError, overallStatus, reactionForStatus } from './recheck-core';
 import type { ComplianceResult } from './types';
 
 const res = (status: ComplianceResult['status'], violations: ComplianceResult['violations'] = []): ComplianceResult =>
@@ -86,18 +86,6 @@ test('successful recheck and the initial check update as before', () => {
     assert.equal(computeRecheckUpdate({}, res('not_accessible'), 'U1', when).$set!.status, 'error');
 });
 
-test('mixed report and all-failed report: reaction follows the kept results', () => {
-    const prev = [bad, res('compliant')];
-    const mixed = [res('compliant'), res('not_accessible')]; // first fixed, second failed
-    const kept = mixed.map((r, i) => effectiveResult(prev[i], r));
-    assert.deepEqual(kept.map(r => r.status), ['compliant', 'compliant']);
-    assert.equal(reactionForStatus(overallStatus(kept)), 'white_check_mark');
-
-    const allFailed = [res('cannot_check'), res('not_accessible')].map((r, i) => effectiveResult(prev[i], r));
-    assert.equal(reactionForStatus(overallStatus(allFailed)), reactionForStatus(overallStatus(prev)));
-    assert.equal(reactionForStatus(overallStatus(allFailed)), 'warning');
-});
-
 const manual = { by: 'U7', at: when, note: 'deleted' };
 
 test('manually handled files count as compliant for the overall status', () => {
@@ -120,7 +108,6 @@ test('computeManualResolutionUpdate leaves the result alone and logs history', (
 
 test('only a successful recheck that finds violations clears the manual mark', () => {
     const job = { result: res('not_accessible'), manualResolution: manual, checkCount: 1 };
-    assert.equal(clearsManualResolution(job, bad), true);
     assert.deepEqual(computeRecheckUpdate(job, bad, 'U1', when).$unset, { resolvedAt: '', manualResolution: '' });
     // compliant: the mark stays as a record
     const ok = computeRecheckUpdate(job, res('compliant'), 'U1', when);
@@ -160,7 +147,6 @@ test('runRecheckStep: a rejected check fails only that file; the others are upda
     assert.equal(step.updates[1].$push.history.errorMessage, 'boom');
     // c: violations again -> mark cleared
     assert.deepEqual(step.updates[2].$unset, { resolvedAt: '', manualResolution: '' });
-    assert.deepEqual(step.handledAfter, [false, false, false]);
 });
 
 test('runRecheckStep: all failed leaves the overall status as it was', async () => {
