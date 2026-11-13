@@ -34,7 +34,7 @@ export const RECHECK_ACTION_ID = 'drive_recheck';
 export const STATUS_EMOJI: Record<string, string> = {
     compliant: ':white_check_mark:',
     violations: ':warning:',
-    cannot_check: ':grey_question:',
+    cannot_check: ':question:',
     not_accessible: ':no_entry:',
 };
 

@@ -4,8 +4,10 @@ import type { ComplianceResult, ComplianceStatus, ComplianceViolation } from './
 export type OverallStatus = 'violations' | 'cannot_check' | 'compliant';
 
 /** Every reaction the bot uses as a status marker on an audit message. */
-export const STATUS_REACTIONS = ['warning', 'grey_question', 'white_check_mark', 'hourglass_flowing_sand'] as const;
+export const STATUS_REACTIONS = ['warning', 'question', 'white_check_mark', 'hourglass_flowing_sand'] as const;
 export type StatusReaction = typeof STATUS_REACTIONS[number];
+/** Status reactions older versions used; still removed when the status changes. */
+export const LEGACY_STATUS_REACTIONS = ['grey_question'] as const;
 export const CHECKING_REACTION: StatusReaction = 'hourglass_flowing_sand';
 
 export type HistoryEntry = {
@@ -53,7 +55,7 @@ export function overallStatusOfJobs(jobs: Pick<JobState, 'result' | 'manualResol
 export function reactionForStatus(status: OverallStatus): StatusReaction {
     switch (status) {
         case 'violations': return 'warning';
-        case 'cannot_check': return 'grey_question';
+        case 'cannot_check': return 'question';
         default: return 'white_check_mark';
     }
 }
@@ -61,7 +63,7 @@ export function reactionForStatus(status: OverallStatus): StatusReaction {
 const PLAIN_EMOJI: Record<ComplianceStatus, string> = {
     compliant: '✅',
     violations: '⚠️',
-    cannot_check: '❔',
+    cannot_check: '❓',
     not_accessible: '⛔',
 };
 

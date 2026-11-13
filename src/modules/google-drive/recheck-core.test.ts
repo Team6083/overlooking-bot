@@ -16,7 +16,7 @@ test('overallStatus: violations beat unchecked beat compliant', () => {
 
 test('reactionForStatus', () => {
     assert.equal(reactionForStatus('violations'), 'warning');
-    assert.equal(reactionForStatus('cannot_check'), 'grey_question');
+    assert.equal(reactionForStatus('cannot_check'), 'question');
     assert.equal(reactionForStatus('compliant'), 'white_check_mark');
 });
 

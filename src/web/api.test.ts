@@ -230,6 +230,7 @@ describe('helpers', () => {
     it('parses GOOGLE_DRIVE_RECHECK_ALLOWED', () => {
         assert.equal(parseRecheckAllowed(undefined), 'everyone');
         assert.equal(parseRecheckAllowed('admins'), 'admins');
+        assert.equal(parseRecheckAllowed('owners'), 'owners');
         assert.throws(() => parseRecheckAllowed('nobody'), /GOOGLE_DRIVE_RECHECK_ALLOWED/);
     });
 
