@@ -42,8 +42,11 @@ export const ObjectIdParam = z.object({
 
 export const ListMessagesQuery = z.object({ collection, limit, cursor });
 export const GetMessageQuery = z.object({ collection });
+export const COMPLIANCE_STATUSES = ['compliant', 'violations', 'cannot_check', 'not_accessible'] as const;
+
 export const ListDriveJobsQuery = z.object({
     status: z.enum(DRIVE_JOB_STATUSES).optional(),
+    complianceStatus: z.enum(COMPLIANCE_STATUSES).optional().openapi({ description: 'Filter on the latest check result (`result.status`).' }),
     limit,
     cursor,
 });
@@ -92,11 +95,18 @@ const ComplianceViolation = z.discriminatedUnion('kind', [
 const ComplianceResult = z.object({
     fileId: z.string(),
     url: z.string(),
-    status: z.enum(['compliant', 'violations', 'cannot_check', 'not_accessible']),
+    status: z.enum(COMPLIANCE_STATUSES),
     fileName: z.string().optional(),
     violations: z.array(ComplianceViolation),
     errorMessage: z.string().optional(),
 }).openapi('ComplianceResult');
+
+const DriveCheckHistoryEntry = z.object({
+    checkedAt: z.iso.datetime(),
+    checkedBy: z.string().openapi({ description: 'Slack user id of whoever triggered the check, or `system` for the initial check.' }),
+    status: z.enum(COMPLIANCE_STATUSES),
+    violations: z.array(ComplianceViolation),
+}).openapi('DriveCheckHistoryEntry');
 
 export const DriveJob = z.object({
     id: z.string(),
@@ -107,7 +117,14 @@ export const DriveJob = z.object({
     status: z.enum(DRIVE_JOB_STATUSES),
     requestedAt: z.iso.datetime(),
     completedAt: z.iso.datetime().optional(),
-    result: ComplianceResult.optional(),
+    result: ComplianceResult.optional().openapi({ description: 'The latest check result.' }),
+    user: z.string().optional().openapi({ description: 'Slack user id of whoever posted the link.' }),
+    auditMessage: z.object({ channel: z.string(), ts: z.string() }).optional()
+        .openapi({ description: 'The audit channel message that reported this check.' }),
+    lastCheckedAt: z.iso.datetime().optional(),
+    checkCount: z.number().int().optional().openapi({ description: 'How many times the file was checked, the initial check included.' }),
+    history: z.array(DriveCheckHistoryEntry).optional().openapi({ description: 'Every check, oldest first.' }),
+    resolvedAt: z.iso.datetime().optional().openapi({ description: 'When the result turned compliant after a non-compliant one; absent while non-compliant.' }),
 }).openapi('DriveJob');
 
 export function page<T extends z.ZodType>(item: T, name: string) {

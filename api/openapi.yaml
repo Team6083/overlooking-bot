@@ -155,6 +155,36 @@ components:
           format: date-time
         result:
           $ref: "#/components/schemas/ComplianceResult"
+        user:
+          type: string
+          description: Slack user id of whoever posted the link.
+        auditMessage:
+          type: object
+          properties:
+            channel:
+              type: string
+            ts:
+              type: string
+          required:
+            - channel
+            - ts
+          description: The audit channel message that reported this check.
+        lastCheckedAt:
+          type: string
+          format: date-time
+        checkCount:
+          type: integer
+          description: How many times the file was checked, the initial check included.
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/DriveCheckHistoryEntry"
+          description: Every check, oldest first.
+        resolvedAt:
+          type: string
+          format: date-time
+          description: When the result turned compliant after a non-compliant one; absent
+            while non-compliant.
       required:
         - id
         - fileId
@@ -190,6 +220,7 @@ components:
         - url
         - status
         - violations
+      description: The latest check result.
     ComplianceViolation:
       oneOf:
         - type: object
@@ -219,6 +250,32 @@ components:
                 - wrong_location
           required:
             - kind
+    DriveCheckHistoryEntry:
+      type: object
+      properties:
+        checkedAt:
+          type: string
+          format: date-time
+        checkedBy:
+          type: string
+          description: Slack user id of whoever triggered the check, or `system` for the
+            initial check.
+        status:
+          type: string
+          enum:
+            - compliant
+            - violations
+            - cannot_check
+            - not_accessible
+        violations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ComplianceViolation"
+      required:
+        - checkedAt
+        - checkedBy
+        - status
+        - violations
   parameters: {}
 paths:
   /api/v1/messages:
@@ -355,6 +412,18 @@ paths:
               - error
           required: false
           name: status
+          in: query
+        - schema:
+            type: string
+            enum:
+              - compliant
+              - violations
+              - cannot_check
+              - not_accessible
+            description: Filter on the latest check result (`result.status`).
+          required: false
+          description: Filter on the latest check result (`result.status`).
+          name: complianceStatus
           in: query
         - schema:
             type: integer

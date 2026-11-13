@@ -9,7 +9,7 @@ A Slack workspace bot for archiving and oversight, built on [Bolt for JavaScript
 | **Slack Storage** | Saves every message, edit and deletion the bot can see to MongoDB, and downloads shared files to disk. It can invite the bot into newly created channels, and it deletes the bot's own "joined the channel" message. | Always on; auto-join via `AUTO_JOIN_CHANNELS` |
 | **App Home** | The bot's Home tab. Other modules add their own sections to it. | Always on |
 | **Reaction Check** | Message shortcut `reaction_check` that lists workspace members who have not reacted to that message. | `USE_REACTION_CHECK=true` |
-| **Google Drive compliance check** | Finds Google Drive / Docs links in messages and checks their sharing settings (public or domain-wide) and location (an approved Shared Drive or folder). Sends the result to the poster as an ephemeral message, and optionally to an audit channel. | `USE_GOOGLE_DRIVE_CHECK=true` |
+| **Google Drive compliance check** | Finds Google Drive / Docs links in messages and checks their sharing settings (public or domain-wide) and location (an approved Shared Drive or folder). Sends the result to the poster as an ephemeral message, and optionally to an audit channel, where reports can be rechecked. | `USE_GOOGLE_DRIVE_CHECK=true` |
 | **Webhook relay** | A stand-in for Slack incoming webhooks: external systems POST Slack-webhook payloads to the bot, which posts them, so they do not use up app slots. Workspace owners create, edit, disable, rotate and delete webhooks from the App Home. | `USE_WEBHOOK_RELAY=true` |
 | **REST API** | Read-only API over the stored messages and Drive check records. | Setting `API_KEY` |
 
@@ -20,6 +20,7 @@ A Slack workspace bot for archiving and oversight, built on [Bolt for JavaScript
 - A Slack app with Socket Mode turned on, and:
   - a bot token (`xoxb-`)
   - an app-level token (`xapp-`) with `connections:write`
+  - bot scopes including `reactions:write` (status reactions on audit reports) and the ones the modules already use
   - a user token (`xoxp-`), used to delete the bot's join messages and to invite the bot into channels
 - Optional: a Google service account with read-only Drive access
 
@@ -83,7 +84,21 @@ All settings come from environment variables (a `.env` file is loaded). [`.env.e
 | `GOOGLE_DRIVE_ALLOWED_FOLDER_IDS` | — | Comma-separated approved folder IDs (parents are followed up to 10 levels) |
 | `GOOGLE_DRIVE_ALLOW_DOMAIN_SHARING` | `false` | Allow "anyone in the organization" sharing |
 | `GOOGLE_DRIVE_REPORT_ONLY_VIOLATIONS` | `true` | Send nothing when every link is compliant |
-| `GOOGLE_DRIVE_AUDIT_CHANNEL` | — | Channel ID that also receives each report |
+| `GOOGLE_DRIVE_AUDIT_CHANNEL` | — | Channel ID that also receives each report; turns on rechecks and the App Home overview |
+| `GOOGLE_DRIVE_RECHECK_ALLOWED` | `everyone` | Who may recheck: `everyone`, or `admins` (workspace owners and admins). Anything else fails at startup |
+
+#### Rechecking
+
+When `GOOGLE_DRIVE_AUDIT_CHANNEL` is set, each audit report has a "重新檢查" button. The poster's ephemeral message is unchanged and is never notified about rechecks. The audit message itself is never edited:
+
+- It carries one status reaction for the latest overall state: `warning` (any violation), `grey_question` (no violation, but some file could not be checked or accessed), `white_check_mark` (all compliant). `hourglass_flowing_sand` shows while a recheck runs.
+- Each recheck posts a reply in the audit message's thread with every file's status, what changed since the previous check, who triggered it, the check time and another recheck button. If the recheck itself fails, the reply says so and the previous reaction and result stay.
+- If the audit message was deleted, the person who clicked gets a private notice instead.
+- Two rechecks of the same report cannot run at once; the second clicker is told to wait.
+
+The App Home lists files whose latest result is not compliant (newest first, up to 20) with a link to the audit message and a recheck button, for everyone who is allowed to recheck. Rechecks are manual; nothing runs on a schedule.
+
+Each `driveComplianceJobs` document (one per message and file) also stores: `user` (poster), `auditMessage` (`{ channel, ts }`), `result` (the latest result), `lastCheckedAt`, `checkCount`, `history` (`[{ checkedAt, checkedBy, status, violations }]`, the initial check first with `checkedBy: "system"`), `resolvedAt` (set when a non-compliant file turns compliant, cleared if it regresses) and a temporary `recheckingAt`/`recheckingToken` lock. Documents created before this feature lack these fields.
 
 With neither approved-location variable set, only sharing settings are checked. The service account must be able to read a file to check it; otherwise the report says the file is not accessible or cannot be checked.
 
@@ -116,7 +131,7 @@ All routes live under `/api/v1` and need the bearer token. The full contract is 
 | --- | --- | --- |
 | `GET` | `/api/v1/messages?collection=` | List messages; `collection` is `messages` (default), `changed_messages` or `deleted_messages` |
 | `GET` | `/api/v1/messages/:id?collection=` | One message |
-| `GET` | `/api/v1/drive/jobs?status=` | List Drive check records; `status` is `pending`, `completed` or `error` |
+| `GET` | `/api/v1/drive/jobs?status=&complianceStatus=` | List Drive check records; `status` is `pending`, `completed` or `error`; `complianceStatus` (the latest result) is `compliant`, `violations`, `cannot_check` or `not_accessible` |
 | `GET` | `/api/v1/drive/jobs/:id` | One Drive check record |
 
 Lists are sorted newest first and return `{ items, nextCursor }`. Pass `nextCursor` back as `?cursor=` for the next page; it is `null` on the last page. `limit` defaults to 50 and is clamped to 200.

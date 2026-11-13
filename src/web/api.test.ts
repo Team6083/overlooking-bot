@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import * as http from 'http';
 import { ObjectId } from 'mongodb';
-import { isValidKey, parseListenAddr } from '../config';
+import { isValidKey, parseListenAddr, parseRecheckAllowed } from '../config';
 import type { DbCollections } from '../db';
 import { OPENAPI_PATH, renderOpenApi } from '../scripts/generate-openapi';
 import { decodeCursor, encodeCursor } from './pagination';
@@ -17,7 +17,7 @@ function fakeCollection(docs: Record<string, any>[]) {
     const matches = (doc: Record<string, any>, q: Record<string, any>) => Object.entries(q).every(([k, v]) => {
         if (k === '_id' && v instanceof ObjectId) return doc._id.equals(v);
         if (k === '_id' && v.$lt) return doc._id.toHexString() < v.$lt.toHexString();
-        return doc[k] === v;
+        return k.split('.').reduce((o: any, part) => o?.[part], doc) === v;
     });
     return {
         find(q: Record<string, any>) {
@@ -42,7 +42,7 @@ const messages = ids.map((_id, i) => ({
 const changed = [{ _id: ids[0], type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.0', message: { ts: '1.0', text: 'new', user: 'U1' }, previous_message: { text: 'old' } }];
 const deleted = [{ _id: ids[0], type: 'message', subtype: 'message_deleted', channel: 'C1', ts: '3.0', deleted_ts: '1.0', previous_message: { text: 'gone', user: 'U2' } }];
 const jobs = [
-    { _id: ids[0], fileId: 'f', url: 'u', channel: 'C1', thread_ts: '1.0', status: 'completed', requestedAt: new Date('2026-01-01T00:00:00Z'), completedAt: new Date('2026-01-01T00:00:01Z'), result: { fileId: 'f', url: 'u', status: 'compliant', violations: [] } },
+    { _id: ids[0], fileId: 'f', url: 'u', channel: 'C1', thread_ts: '1.0', status: 'completed', requestedAt: new Date('2026-01-01T00:00:00Z'), completedAt: new Date('2026-01-01T00:00:01Z'), result: { fileId: 'f', url: 'u', status: 'compliant', violations: [] }, user: 'U1', auditMessage: { channel: 'CA', ts: '9.0' }, lastCheckedAt: new Date('2026-01-01T00:00:01Z'), checkCount: 1, history: [{ checkedAt: new Date('2026-01-01T00:00:01Z'), checkedBy: 'system', status: 'compliant', violations: [] }] },
     { _id: ids[1], fileId: 'g', url: 'v', channel: 'C1', thread_ts: '2.0', status: 'pending', requestedAt: new Date('2026-01-02T00:00:00Z') },
 ];
 
@@ -161,6 +161,18 @@ describe('REST API', () => {
         assert.equal(done.items[0].messageTs, '1.0');
         assert.equal(done.items[0].thread_ts, undefined);
         assert.equal((await get('/api/v1/drive/jobs?status=done')).status, 400);
+        assert.equal(done.items[0].history[0].checkedBy, 'system');
+        assert.equal(done.items[0].auditMessage.ts, '9.0');
+        assert.equal(done.items[0].checkCount, 1);
+        assert.equal(done.items[0].lastCheckedAt, '2026-01-01T00:00:01.000Z');
+    });
+
+    it('filters Drive jobs by compliance status', async () => {
+        const ok = await (await get('/api/v1/drive/jobs?complianceStatus=compliant')).json();
+        assert.deepEqual(ok.items.map((j: any) => j.fileId), ['f']);
+        const none = await (await get('/api/v1/drive/jobs?complianceStatus=violations')).json();
+        assert.equal(none.items.length, 0);
+        assert.equal((await get('/api/v1/drive/jobs?complianceStatus=bad')).status, 400);
     });
 
     it('hands /services/... to the webhook relay untouched', async () => {
@@ -181,6 +193,12 @@ describe('helpers', () => {
     it('round-trips cursors and rejects junk', () => {
         assert.ok(decodeCursor(encodeCursor(ids[3]))!.equals(ids[3]));
         assert.equal(decodeCursor('not a cursor'), undefined);
+    });
+
+    it('parses GOOGLE_DRIVE_RECHECK_ALLOWED', () => {
+        assert.equal(parseRecheckAllowed(undefined), 'everyone');
+        assert.equal(parseRecheckAllowed('admins'), 'admins');
+        assert.throws(() => parseRecheckAllowed('nobody'), /GOOGLE_DRIVE_RECHECK_ALLOWED/);
     });
 
     it('parses LISTEN_ADDR', () => {

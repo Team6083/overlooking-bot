@@ -79,5 +79,20 @@ export function toDriveJob(doc: Doc): z.infer<typeof DriveJob> {
         requestedAt: iso(doc.requestedAt) ?? '',
         completedAt: iso(doc.completedAt),
         result: doc.result,
+        user: str(doc.user),
+        auditMessage: doc.auditMessage && typeof doc.auditMessage === 'object'
+            ? { channel: String(doc.auditMessage.channel), ts: String(doc.auditMessage.ts) }
+            : undefined,
+        lastCheckedAt: iso(doc.lastCheckedAt),
+        checkCount: typeof doc.checkCount === 'number' ? doc.checkCount : undefined,
+        history: Array.isArray(doc.history)
+            ? doc.history.map((h: Doc) => ({
+                checkedAt: iso(h.checkedAt) ?? '',
+                checkedBy: String(h.checkedBy),
+                status: h.status,
+                violations: h.violations ?? [],
+            }))
+            : undefined,
+        resolvedAt: iso(doc.resolvedAt),
     };
 }

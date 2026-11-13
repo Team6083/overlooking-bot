@@ -19,7 +19,10 @@ export function createDriveRouter(collections: DbCollections): Router {
             return sendError(res, 400, 'invalid_request', 'Invalid request parameters', { fields: { cursor: 'invalid cursor' } });
         }
 
-        const filter = query.data.status ? { status: query.data.status } : {};
+        const filter = {
+            ...(query.data.status ? { status: query.data.status } : {}),
+            ...(query.data.complianceStatus ? { 'result.status': query.data.complianceStatus } : {}),
+        };
         const { docs, nextCursor } = await findPage(collections.driveComplianceJobs, filter, query.data.limit, after);
         res.json({ items: docs.map(toDriveJob), nextCursor });
     });
