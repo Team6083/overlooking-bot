@@ -42,8 +42,12 @@ export const ObjectIdParam = z.object({
 
 export const ListMessagesQuery = z.object({ collection, limit, cursor });
 export const GetMessageQuery = z.object({ collection });
+export const COMPLIANCE_STATUSES = ['compliant', 'violations', 'cannot_check', 'not_accessible'] as const;
+
 export const ListDriveJobsQuery = z.object({
     status: z.enum(DRIVE_JOB_STATUSES).optional(),
+    open: z.enum(['true', 'false']).optional().openapi({ description: '`true`: the latest result is not compliant and the item was not manually marked handled; `false`: the complement.' }),
+    complianceStatus: z.enum(COMPLIANCE_STATUSES).optional().openapi({ description: 'Filter on the latest check result (`result.status`).' }),
     limit,
     cursor,
 });
@@ -92,11 +96,28 @@ const ComplianceViolation = z.discriminatedUnion('kind', [
 const ComplianceResult = z.object({
     fileId: z.string(),
     url: z.string(),
-    status: z.enum(['compliant', 'violations', 'cannot_check', 'not_accessible']),
+    status: z.enum(COMPLIANCE_STATUSES),
     fileName: z.string().optional(),
     violations: z.array(ComplianceViolation),
     errorMessage: z.string().optional(),
 }).openapi('ComplianceResult');
+
+const DriveCheckHistoryEntry = z.object({
+    checkedAt: z.iso.datetime(),
+    kind: z.enum(['check', 'manual_resolution']).openapi({ description: '`manual_resolution`: someone marked the item handled (`status`/`violations` are the result at that time).' }),
+    checkedBy: z.string().openapi({ description: 'Slack user id of whoever triggered the check or marked the item handled, or `system` for the initial check.' }),
+    note: z.string().optional().openapi({ description: 'For `manual_resolution`: the explanation given.' }),
+    status: z.enum(COMPLIANCE_STATUSES),
+    violations: z.array(ComplianceViolation),
+    failed: z.boolean().optional().openapi({ description: 'True for a recheck that could not be completed; it did not change the stored result.' }),
+    errorMessage: z.string().optional().openapi({ description: 'For a failed recheck: why.' }),
+}).openapi('DriveCheckHistoryEntry');
+
+const ManualResolution = z.object({
+    by: z.string().openapi({ description: 'Slack user id.' }),
+    at: z.iso.datetime(),
+    note: z.string(),
+}).openapi('ManualResolution');
 
 export const DriveJob = z.object({
     id: z.string(),
@@ -108,6 +129,14 @@ export const DriveJob = z.object({
     requestedAt: z.iso.datetime(),
     completedAt: z.iso.datetime().optional(),
     result: ComplianceResult.optional(),
+    user: z.string().optional().openapi({ description: 'Slack user id of whoever posted the link.' }),
+    auditMessage: z.object({ channel: z.string(), ts: z.string() }).optional()
+        .openapi({ description: 'The audit channel message that reported this check.' }),
+    lastCheckedAt: z.iso.datetime().optional(),
+    checkCount: z.number().int().optional().openapi({ description: 'How many checks produced a verdict, the initial check included. Failed rechecks are not counted; see history.' }),
+    history: z.array(DriveCheckHistoryEntry).optional().openapi({ description: 'Every check, oldest first.' }),
+    manualResolution: ManualResolution.optional().openapi({ description: 'Set when someone marked the item handled; cleared when a later recheck finds violations again.' }),
+    resolvedAt: z.iso.datetime().optional().openapi({ description: 'When the result turned compliant after a non-compliant one; absent while non-compliant.' }),
 }).openapi('DriveJob');
 
 export function page<T extends z.ZodType>(item: T, name: string) {

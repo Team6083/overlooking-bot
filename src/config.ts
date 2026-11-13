@@ -3,6 +3,8 @@ config();
 
 import { getBoltLogLevel } from './utils/slack';
 
+export type RecheckAllowed = 'everyone' | 'admins';
+
 export interface Config {
     slack: {
         botToken: string;
@@ -28,6 +30,7 @@ export interface Config {
         googleDriveMaxParentTraversalDepth: number;
         googleDriveReportOnlyViolations: boolean;
         googleDriveAuditChannel?: string;
+        googleDriveRecheckAllowed: RecheckAllowed;
         googleServiceAccountKeyFile?: string;
         googleServiceAccountKeyJson?: string;
     };
@@ -61,6 +64,13 @@ export function parseListenAddr(raw: string): ListenAddr {
 export function isValidKey(value: string): boolean {
     if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return false;
     return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64').length >= 32;
+}
+
+/** GOOGLE_DRIVE_RECHECK_ALLOWED: who may recheck Drive reports; defaults to everyone. */
+export function parseRecheckAllowed(raw: string | undefined): RecheckAllowed {
+    if (!raw) return 'everyone';
+    if (raw === 'everyone' || raw === 'admins') return raw;
+    throw new Error(`Env GOOGLE_DRIVE_RECHECK_ALLOWED must be "everyone" or "admins" (got ${JSON.stringify(raw)}).`);
 }
 
 function required(name: string): string {
@@ -126,6 +136,7 @@ export function loadConfig(): Config {
             googleDriveMaxParentTraversalDepth: 10,
             googleDriveReportOnlyViolations: process.env.GOOGLE_DRIVE_REPORT_ONLY_VIOLATIONS !== 'false',
             googleDriveAuditChannel: optional('GOOGLE_DRIVE_AUDIT_CHANNEL'),
+            googleDriveRecheckAllowed: parseRecheckAllowed(process.env.GOOGLE_DRIVE_RECHECK_ALLOWED),
             googleServiceAccountKeyFile: optional('GOOGLE_SERVICE_ACCOUNT_KEY_FILE'),
             googleServiceAccountKeyJson: optional('GOOGLE_SERVICE_ACCOUNT_KEY_JSON'),
         },

@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import * as http from 'http';
 import { ObjectId } from 'mongodb';
-import { isValidKey, parseListenAddr } from '../config';
+import { isValidKey, parseListenAddr, parseRecheckAllowed } from '../config';
 import type { DbCollections } from '../db';
 import { OPENAPI_PATH, renderOpenApi } from '../scripts/generate-openapi';
 import { decodeCursor, encodeCursor } from './pagination';
@@ -14,10 +14,16 @@ const API_KEY = Buffer.alloc(32, 7).toString('base64');
 
 /** Minimal in-memory stand-in for the Mongo collection calls the API makes. */
 function fakeCollection(docs: Record<string, any>[]) {
-    const matches = (doc: Record<string, any>, q: Record<string, any>) => Object.entries(q).every(([k, v]) => {
+    const matches = (doc: Record<string, any>, q: Record<string, any>): boolean => Object.entries(q).every(([k, v]) => {
+        if (k === '$and') return (v as any[]).every(sub => matches(doc, sub));
+        if (k === '$or') return (v as any[]).some(sub => matches(doc, sub));
         if (k === '_id' && v instanceof ObjectId) return doc._id.equals(v);
         if (k === '_id' && v.$lt) return doc._id.toHexString() < v.$lt.toHexString();
-        return doc[k] === v;
+        const actual = k.split('.').reduce((o: any, part) => o?.[part], doc);
+        if (v && typeof v === 'object' && !(v instanceof Date) && Object.keys(v).some(op => op.startsWith('$'))) {
+            return (!('$ne' in v) || actual !== v.$ne) && (!('$exists' in v) || (actual !== undefined) === v.$exists);
+        }
+        return actual === v;
     });
     return {
         find(q: Record<string, any>) {
@@ -42,8 +48,10 @@ const messages = ids.map((_id, i) => ({
 const changed = [{ _id: ids[0], type: 'message', subtype: 'message_changed', channel: 'C1', ts: '2.0', message: { ts: '1.0', text: 'new', user: 'U1' }, previous_message: { text: 'old' } }];
 const deleted = [{ _id: ids[0], type: 'message', subtype: 'message_deleted', channel: 'C1', ts: '3.0', deleted_ts: '1.0', previous_message: { text: 'gone', user: 'U2' } }];
 const jobs = [
-    { _id: ids[0], fileId: 'f', url: 'u', channel: 'C1', thread_ts: '1.0', status: 'completed', requestedAt: new Date('2026-01-01T00:00:00Z'), completedAt: new Date('2026-01-01T00:00:01Z'), result: { fileId: 'f', url: 'u', status: 'compliant', violations: [] } },
+    { _id: ids[0], fileId: 'f', url: 'u', channel: 'C1', thread_ts: '1.0', status: 'completed', requestedAt: new Date('2026-01-01T00:00:00Z'), completedAt: new Date('2026-01-01T00:00:01Z'), result: { fileId: 'f', url: 'u', status: 'compliant', violations: [] }, user: 'U1', auditMessage: { channel: 'CA', ts: '9.0' }, lastCheckedAt: new Date('2026-01-01T00:00:01Z'), checkCount: 1, history: [{ checkedAt: new Date('2026-01-01T00:00:01Z'), checkedBy: 'system', status: 'compliant', violations: [] }, { checkedAt: new Date('2026-01-02T00:00:00Z'), checkedBy: 'U2', status: 'not_accessible', violations: [], failed: true, errorMessage: 'HTTP 403' }] },
     { _id: ids[1], fileId: 'g', url: 'v', channel: 'C1', thread_ts: '2.0', status: 'pending', requestedAt: new Date('2026-01-02T00:00:00Z') },
+    { _id: ids[2], fileId: 'h', url: 'w', channel: 'C1', thread_ts: '3.0', status: 'completed', requestedAt: new Date('2026-01-03T00:00:00Z'), result: { fileId: 'h', url: 'w', status: 'violations', violations: [{ kind: 'domain_sharing' }] } },
+    { _id: ids[3], fileId: 'i', url: 'x', channel: 'C1', thread_ts: '4.0', status: 'error', requestedAt: new Date('2026-01-04T00:00:00Z'), result: { fileId: 'i', url: 'x', status: 'not_accessible', violations: [] }, manualResolution: { by: 'U3', at: new Date('2026-01-05T00:00:00Z'), note: 'file deleted' }, history: [{ kind: 'manual_resolution', checkedAt: new Date('2026-01-05T00:00:00Z'), checkedBy: 'U3', status: 'not_accessible', violations: [], note: 'file deleted' }] },
 ];
 
 const collections = {
@@ -154,13 +162,49 @@ describe('REST API', () => {
 
     it('lists and filters Drive jobs with RFC 3339 times', async () => {
         const all = await (await get('/api/v1/drive/jobs')).json();
-        assert.equal(all.items.length, 2);
+        assert.equal(all.items.length, 4);
         const done = await (await get('/api/v1/drive/jobs?status=completed')).json();
-        assert.deepEqual(done.items.map((j: any) => j.fileId), ['f']);
-        assert.equal(done.items[0].requestedAt, '2026-01-01T00:00:00.000Z');
-        assert.equal(done.items[0].messageTs, '1.0');
-        assert.equal(done.items[0].thread_ts, undefined);
+        assert.deepEqual(done.items.map((j: any) => j.fileId).sort(), ['f', 'h']);
+        const doneF = done.items.find((j: any) => j.fileId === 'f');
+        assert.equal(doneF.requestedAt, '2026-01-01T00:00:00.000Z');
+        assert.equal(doneF.messageTs, '1.0');
+        assert.equal(doneF.thread_ts, undefined);
         assert.equal((await get('/api/v1/drive/jobs?status=done')).status, 400);
+        assert.equal(doneF.history[0].checkedBy, 'system');
+        assert.equal(doneF.auditMessage.ts, '9.0');
+        assert.equal(doneF.checkCount, 1);
+        assert.equal(doneF.history[1].failed, true);
+        assert.equal(doneF.history[1].errorMessage, 'HTTP 403');
+        assert.equal(doneF.history[0].failed, undefined);
+        assert.equal(doneF.lastCheckedAt, '2026-01-01T00:00:01.000Z');
+    });
+
+    it('filters Drive jobs by compliance status', async () => {
+        const ok = await (await get('/api/v1/drive/jobs?complianceStatus=compliant')).json();
+        assert.deepEqual(ok.items.map((j: any) => j.fileId), ['f']);
+        const viol = await (await get('/api/v1/drive/jobs?complianceStatus=violations')).json();
+        assert.deepEqual(viol.items.map((j: any) => j.fileId), ['h']);
+        assert.equal((await get('/api/v1/drive/jobs?complianceStatus=bad')).status, 400);
+    });
+
+    it('filters Drive jobs by open, and exposes manual resolutions', async () => {
+        const open = await (await get('/api/v1/drive/jobs?open=true')).json();
+        // a result that is not compliant and no handled mark; a job without a result yet is not open
+        assert.deepEqual(open.items.map((j: any) => j.fileId), ['h']);
+        const closed = await (await get('/api/v1/drive/jobs?open=false')).json();
+        assert.deepEqual(closed.items.map((j: any) => j.fileId).sort(), ['f', 'g', 'i']);
+        const total = (await (await get('/api/v1/drive/jobs')).json()).items.length;
+        assert.equal(open.items.length + closed.items.length, total);
+        const handled = closed.items.find((j: any) => j.fileId === 'i');
+        assert.deepEqual(handled.manualResolution, { by: 'U3', at: '2026-01-05T00:00:00.000Z', note: 'file deleted' });
+        assert.equal(handled.history[0].kind, 'manual_resolution');
+        assert.equal(handled.history[0].note, 'file deleted');
+        const both = await (await get('/api/v1/drive/jobs?open=true&complianceStatus=violations')).json();
+        assert.deepEqual(both.items.map((j: any) => j.fileId), ['h']);
+        assert.equal((await get('/api/v1/drive/jobs?open=maybe')).status, 400);
+        const f = closed.items.find((j: any) => j.fileId === 'f');
+        assert.equal(f.history[0].kind, 'check');
+        assert.equal(f.manualResolution, undefined);
     });
 
     it('hands /services/... to the webhook relay untouched', async () => {
@@ -181,6 +225,12 @@ describe('helpers', () => {
     it('round-trips cursors and rejects junk', () => {
         assert.ok(decodeCursor(encodeCursor(ids[3]))!.equals(ids[3]));
         assert.equal(decodeCursor('not a cursor'), undefined);
+    });
+
+    it('parses GOOGLE_DRIVE_RECHECK_ALLOWED', () => {
+        assert.equal(parseRecheckAllowed(undefined), 'everyone');
+        assert.equal(parseRecheckAllowed('admins'), 'admins');
+        assert.throws(() => parseRecheckAllowed('nobody'), /GOOGLE_DRIVE_RECHECK_ALLOWED/);
     });
 
     it('parses LISTEN_ADDR', () => {

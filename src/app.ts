@@ -6,6 +6,7 @@ import { SlackStorageModule } from './modules/slack-storage';
 import { AppHomeModule } from './modules/app-home';
 import { ReactionCheckModule } from './modules/reaction-check';
 import { GoogleDriveCheckModule } from './modules/google-drive/handler';
+import { GoogleDriveRecheckModule } from './modules/google-drive/recheck';
 import { startHttpServer } from './web/server';
 import { WebhookRelayModule } from './modules/webhook-relay';
 
@@ -80,6 +81,24 @@ import { WebhookRelayModule } from './modules/webhook-relay';
             config.features.googleDriveAuditChannel,
         );
         await gdCheckModule.init();
+
+        // Recheck only exists next to the audit channel's reports.
+        if (config.features.googleDriveAuditChannel) {
+            const recheckModule = new GoogleDriveRecheckModule(
+                app,
+                appHomeModule,
+                driveClient,
+                collections.driveComplianceJobs,
+                {
+                    allowedSharedDriveIds: config.features.googleDriveAllowedSharedDriveIds,
+                    allowedFolderIds: config.features.googleDriveAllowedFolderIds,
+                    allowDomainSharing: config.features.googleDriveAllowDomainSharing,
+                    maxParentTraversalDepth: config.features.googleDriveMaxParentTraversalDepth,
+                },
+                config.features.googleDriveRecheckAllowed,
+            );
+            await recheckModule.init();
+        }
     }
 
     // One HTTP server on LISTEN_ADDR for the REST API and the webhook relay; none when both are off.

@@ -1,8 +1,10 @@
 import { App } from '@slack/bolt';
-import { KnownBlock } from '@slack/types';
 import { drive_v3 } from 'googleapis';
 import { Collection } from 'mongodb';
-import { checkDriveCompliance, ComplianceCheckerOptions, ComplianceResult } from './checker';
+import { checkDriveCompliance, ComplianceCheckerOptions } from './checker';
+import { computeJobUpdate, overallStatus, reactionForStatus } from './recheck-core';
+import { addStatusReaction } from './slack';
+import { buildComplianceBlocks, encodeRecheckValue } from './report';
 
 const DRIVE_LINK_PATTERNS = [
     /https?:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/g,
@@ -32,83 +34,6 @@ function extractDriveLinks(text: string): Array<{ id: string; url: string }> {
     return results;
 }
 
-const STATUS_EMOJI: Record<string, string> = {
-    compliant: ':white_check_mark:',
-    violations: ':warning:',
-    cannot_check: ':grey_question:',
-    not_accessible: ':no_entry:',
-};
-
-const STATUS_LABEL: Record<string, string> = {
-    compliant: '合規',
-    violations: '發現違規',
-    cannot_check: '無法稽核',
-    not_accessible: '無法存取',
-};
-
-function escapeMrkdwn(text: string): string {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function buildFileSection(result: ComplianceResult): string {
-    // Always wrap the URL in <...> so Slack doesn't auto-link the surrounding
-    // bold markers (`*`) into the URL itself.
-    const fileLink = result.fileName
-        ? `<${result.url}|${escapeMrkdwn(result.fileName)}>`
-        : `<${result.url}>`;
-
-    const lines: string[] = [
-        `${STATUS_EMOJI[result.status]} *${fileLink}*`,
-        `*狀態：* ${STATUS_LABEL[result.status]}`,
-    ];
-
-    if (result.status === 'violations') {
-        for (const v of result.violations) {
-            if (v.kind === 'public_access') {
-                lines.push(v.allowFileDiscovery
-                    ? ':unlock: 公開分享（任何人都可搜尋並存取）'
-                    : ':link: 連結分享（知道連結的任何人可存取）');
-            } else if (v.kind === 'domain_sharing') {
-                lines.push(':office: 組織內分享（整個組織都可存取）');
-            } else {
-                lines.push(':file_folder: 檔案不在核准的位置（Shared Drive 或指定資料夾）');
-            }
-        }
-    } else if (result.status === 'cannot_check') {
-        lines.push('Bot 沒有權限查看此檔案的分享設定。');
-    } else if (result.status === 'not_accessible') {
-        lines.push('Bot 無法存取此檔案，可能是連結無效或存取受限。');
-    }
-
-    return lines.join('\n');
-}
-
-function buildComplianceBlocks(
-    results: ComplianceResult[],
-    auditContext?: { userId: string; channel: string },
-): KnownBlock[] {
-    const headerText = auditContext
-        ? `*Google Drive 合規稽核報告*\n由 <@${auditContext.userId}> 分享於 <#${auditContext.channel}>`
-        : '*Google Drive 合規稽核報告*';
-
-    const blocks: KnownBlock[] = [
-        {
-            type: 'section',
-            text: { type: 'mrkdwn', text: headerText },
-        },
-    ];
-
-    for (const result of results) {
-        blocks.push({ type: 'divider' });
-        blocks.push({
-            type: 'section',
-            text: { type: 'mrkdwn', text: buildFileSection(result) },
-        });
-    }
-
-    return blocks;
-}
-
 export class GoogleDriveCheckModule {
     constructor(
         private app: App,
@@ -134,6 +59,7 @@ export class GoogleDriveCheckModule {
                     url,
                     channel: message.channel,
                     thread_ts: message.ts,
+                    ...('user' in message && message.user ? { user: message.user } : {}),
                     requestedAt: now,
                     status: 'pending',
                 }))
@@ -147,12 +73,13 @@ export class GoogleDriveCheckModule {
 
             const completedAt = new Date();
             await Promise.all(
-                results.map(result =>
-                    this.jobCollection.updateOne(
-                        { fileId: result.fileId, thread_ts: message.ts, status: 'pending' },
-                        { $set: { status: result.status === 'not_accessible' || result.status === 'cannot_check' ? 'error' : 'completed', result, completedAt } }
-                    )
-                )
+                results.map(result => {
+                    const { $set, $unset, $push } = computeJobUpdate({}, result, 'system', completedAt);
+                    return this.jobCollection.updateOne(
+                        { fileId: result.fileId, channel: message.channel, thread_ts: message.ts, status: 'pending' },
+                        { $set: { ...$set, completedAt }, ...($unset ? { $unset } : {}), $push } as any
+                    );
+                })
             );
 
             const allCompliant = results.every(r => r.status === 'compliant');
@@ -169,14 +96,27 @@ export class GoogleDriveCheckModule {
             }
 
             if (!skipNotify && this.auditChannel && 'user' in message && message.user) {
-                await client.chat.postMessage({
+                const audit = await client.chat.postMessage({
                     channel: this.auditChannel,
                     blocks: buildComplianceBlocks(results, {
                         userId: message.user,
                         channel: message.channel,
+                        recheckValue: encodeRecheckValue(message.channel, message.ts),
                     }),
                     text: 'Google Drive 合規稽核報告',
                 });
+                if (audit.ts) {
+                    const auditChannel = audit.channel ?? this.auditChannel;
+                    await this.jobCollection.updateMany(
+                        { channel: message.channel, thread_ts: message.ts },
+                        { $set: { auditMessage: { channel: auditChannel, ts: audit.ts } } }
+                    );
+                    try {
+                        await addStatusReaction(client, auditChannel, audit.ts, reactionForStatus(overallStatus(results)));
+                    } catch (err) {
+                        logger.error('Failed to add the status reaction to the audit message', err);
+                    }
+                }
             }
 
             logger.debug(`Drive compliance checked for ${results.length} file(s) in ${message.channel}/${message.ts}`);
